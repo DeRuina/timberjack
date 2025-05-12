@@ -1,6 +1,9 @@
 //go:build linux
 // +build linux
 
+// This example demonstrates log rotation on receiving SIGHUP.
+// It only runs on Linux because SIGHUP and syscall behavior are OS-specific.
+
 package timberjack
 
 import (
