@@ -811,3 +811,109 @@ func TestTimeBasedRotation(t *testing.T) {
 		t.Fatalf("expected rotated backup file with original contents, but none found")
 	}
 }
+
+// TestSizeBasedRotation specifically tests rotation when MaxSize is exceeded.
+func TestSizeBasedRotation(t *testing.T) {
+	currentTime = fakeTime // Ensure our mock time is used
+	megabyte = 1           // For testing with small byte sizes
+
+	dir := makeTempDir("TestSizeBasedRotation", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir) // e.g., /tmp/.../foobar.log
+	l := &Logger{
+		Filename:   filename,
+		MaxSize:    10, // Max size of 10 bytes
+		MaxBackups: 1,
+		LocalTime:  false, // To match backupFileWithReason which uses UTC
+	}
+	defer l.Close()
+
+	// First write: 5 bytes, does not exceed MaxSize (10 bytes)
+	content1 := []byte("Hello") // 5 bytes
+	n, err := l.Write(content1)
+	isNil(err, t)
+	equals(len(content1), n, t)
+	existsWithContent(filename, content1, t)
+	fileCount(dir, 1, t)
+
+	// Advance time for the backup timestamp.
+	// Note: originalFakeTime variable was here and was unused. It has been removed.
+	newFakeTime() // Advances the global fakeCurrentTime
+
+	// Second write: 6 bytes. Current size (5) + new write (6) = 11 bytes, which exceeds MaxSize (10 bytes)
+	content2 := []byte("World!") // 6 bytes
+	n, err = l.Write(content2)
+	isNil(err, t)
+	equals(len(content2), n, t)
+
+	// After rotation:
+	// Current log file should contain only content2
+	existsWithContent(filename, content2, t)
+
+	// Backup file should exist with content1.
+	// backupFileWithReason uses the *current* fakeTime (which was advanced by newFakeTime)
+	// to generate the timestamped name. The rotation timestamp (l.logStartTime for the
+	// backed-up segment, used in backupName) is set to currentTime() when openNew is called.
+	backupFilename := backupFileWithReason(dir, "size")
+	existsWithContent(backupFilename, content1, t)
+
+	fileCount(dir, 2, t)
+}
+
+// TestMinuteBasedRotation specifically tests the RotateAtMinutes feature.
+func TestMinuteBasedRotation(t *testing.T) {
+    currentTime = fakeTime // Ensure our mock clock is used
+
+    // content1 is 40 bytes, content2 is 39 bytes
+    content1 := []byte("This is content1, exactly 40 bytes long\n")
+    content2 := []byte("This is content2, 39 bytes long now\n")
+
+    rotationMinute := 30 // Rotate at HH:30:00
+
+    // 1) Start just before the 30-minute mark (e.g. 10:29:59.800 UTC)
+    initialTime := time.Date(2025, time.May, 12, 10, rotationMinute-1, 59, 800*int(time.Millisecond), time.UTC)
+    fakeCurrentTime = initialTime
+
+    dir := makeTempDir("TestMinuteBasedRotation", t)
+    defer os.RemoveAll(dir)
+
+    filename := logFile(dir)
+
+    l := &Logger{
+        Filename:        filename,
+        RotateAtMinutes: []int{rotationMinute},
+        MaxSize:         1000,  // large enough not to trigger size rotation
+        LocalTime:       false, // UTC for backupFileWithReason
+    }
+    defer l.Close() // stops the rotation goroutine
+
+    // Write the first block
+    n, err := l.Write(content1)
+    isNil(err, t)
+    equals(len(content1), n, t)
+    existsWithContent(filename, content1, t)
+    fileCount(dir, 1, t)
+
+    // 2) Advance past HH:30:00 (e.g. to 10:30:00.250 UTC)
+    rotationExecutionTime := time.Date(2025, time.May, 12, 10, rotationMinute, 0, 250*int(time.Millisecond), time.UTC)
+    fakeCurrentTime = rotationExecutionTime
+
+    // 3) Give the goroutine time to wake and perform rotation (~200ms + buffer)
+    time.Sleep(300 * time.Millisecond)
+
+    // 4) Write the second block, which should now go into a fresh file
+    n, err = l.Write(content2)
+    isNil(err, t)
+    equals(len(content2), n, t)
+
+    // Verify the current log has only content2
+    existsWithContent(filename, content2, t)
+
+    // 5) Check that the backup (reason "time") contains content1
+    expectedBackup := backupFileWithReason(dir, "time")
+    existsWithContent(expectedBackup, content1, t)
+
+    // Finally, there should be exactly 2 files: the live log and one backup
+    fileCount(dir, 2, t)
+}
