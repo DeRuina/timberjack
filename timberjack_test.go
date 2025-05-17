@@ -861,59 +861,68 @@ func TestSizeBasedRotation(t *testing.T) {
 	fileCount(dir, 2, t)
 }
 
-// TestMinuteBasedRotation specifically tests the RotateAtMinutes feature.
-func TestMinuteBasedRotation(t *testing.T) {
-    currentTime = fakeTime // Ensure our mock clock is used
+// TestRotateAtMinutes
+func TestRotateAtMinutes(t *testing.T) {
+	currentTime = fakeTime // use our mock clock
 
-    // content1 is 40 bytes, content2 is 39 bytes
-    content1 := []byte("This is content1, exactly 40 bytes long\n")
-    content2 := []byte("This is content2, 39 bytes long now\n")
+	// three distinct payloads
+	content1 := []byte("first content\n")
+	content2 := []byte("second content\n")
+	content3 := []byte("third content\n")
 
-    rotationMinute := 30 // Rotate at HH:30:00
+	// configure 0, 15, and 30 minute marks
+	marks := []int{0, 15, 30}
 
-    // 1) Start just before the 30-minute mark (e.g. 10:29:59.800 UTC)
-    initialTime := time.Date(2025, time.May, 12, 10, rotationMinute-1, 59, 800*int(time.Millisecond), time.UTC)
-    fakeCurrentTime = initialTime
+	// 1) Start just before the 14:00 mark (e.g. 14:00:59 UTC)
+	initial := time.Date(2025, time.May, 12, 14, 0, 59, 0, time.UTC)
+	fakeCurrentTime = initial
 
-    dir := makeTempDir("TestMinuteBasedRotation", t)
-    defer os.RemoveAll(dir)
+	dir := makeTempDir("TestRotateAtMinutes", t)
+	defer os.RemoveAll(dir)
+	filename := logFile(dir)
 
-    filename := logFile(dir)
+	l := &Logger{
+		Filename:        filename,
+		RotateAtMinutes: marks,
+		MaxSize:         1000,  // disable size-based rotation
+		LocalTime:       false, // use UTC for backup timestamps
+	}
+	defer l.Close() // stop scheduling goroutine
 
-    l := &Logger{
-        Filename:        filename,
-        RotateAtMinutes: []int{rotationMinute},
-        MaxSize:         1000,  // large enough not to trigger size rotation
-        LocalTime:       false, // UTC for backupFileWithReason
-    }
-    defer l.Close() // stops the rotation goroutine
+	// 2) Write at 14:01 → no rotation yet
+	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 1, 0, 0, time.UTC)
+	n, err := l.Write(content1)
+	isNil(err, t)
+	equals(len(content1), n, t)
+	existsWithContent(filename, content1, t)
+	fileCount(dir, 1, t) // only the live logfile
 
-    // Write the first block
-    n, err := l.Write(content1)
-    isNil(err, t)
-    equals(len(content1), n, t)
-    existsWithContent(filename, content1, t)
-    fileCount(dir, 1, t)
+	// 3) Advance to 14:15 exactly, let the goroutine fire
+	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 15, 0, 0, time.UTC)
+	time.Sleep(300 * time.Millisecond)
 
-    // 2) Advance past HH:30:00 (e.g. to 10:30:00.250 UTC)
-    rotationExecutionTime := time.Date(2025, time.May, 12, 10, rotationMinute, 0, 250*int(time.Millisecond), time.UTC)
-    fakeCurrentTime = rotationExecutionTime
+	// 4) Write at 14:16 → should be on a fresh file, and first-backup is content1
+	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 16, 0, 0, time.UTC)
+	n, err = l.Write(content2)
+	isNil(err, t)
+	equals(len(content2), n, t)
+	existsWithContent(filename, content2, t)
+	expected1 := backupFileWithReason(dir, "time")
+	existsWithContent(expected1, content1, t)
+	fileCount(dir, 2, t)
 
-    // 3) Give the goroutine time to wake and perform rotation (~200ms + buffer)
-    time.Sleep(300 * time.Millisecond)
+	// 5) Advance past the 14:30 mark without writing → no new rotation
+	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 30, 0, 0, time.UTC)
+	time.Sleep(300 * time.Millisecond)
+	fileCount(dir, 2, t) // still just the live log + one backup
 
-    // 4) Write the second block, which should now go into a fresh file
-    n, err = l.Write(content2)
-    isNil(err, t)
-    equals(len(content2), n, t)
-
-    // Verify the current log has only content2
-    existsWithContent(filename, content2, t)
-
-    // 5) Check that the backup (reason "time") contains content1
-    expectedBackup := backupFileWithReason(dir, "time")
-    existsWithContent(expectedBackup, content1, t)
-
-    // Finally, there should be exactly 2 files: the live log and one backup
-    fileCount(dir, 2, t)
+	// 6) Write at 14:31 → triggers the 30-minute mark rotation, and rolls content2
+	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 31, 0, 0, time.UTC)
+	n, err = l.Write(content3)
+	isNil(err, t)
+	equals(len(content3), n, t)
+	existsWithContent(filename, content3, t)
+	expected2 := backupFileWithReason(dir, "time")
+	existsWithContent(expected2, content2, t)
+	fileCount(dir, 3, t)
 }

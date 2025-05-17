@@ -155,42 +155,63 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Ensure scheduled rotation loop is running if configured
+	// Ensure the scheduled-rotation goroutine is running (if you've still got one).
 	l.ensureScheduledRotationLoopRunning()
+
+	// Anchor all checks to the same instant.
+	now := currentTime().In(l.location())
 
 	writeLen := int64(len(p))
 	if writeLen > l.max() {
 		return 0, fmt.Errorf("write length %d exceeds maximum file size %d", writeLen, l.max())
 	}
 
+	// Open (or create) the file on first write.
 	if l.file == nil {
 		if err = l.openExistingOrNew(len(p)); err != nil {
 			return 0, err
 		}
-		// Initialize lastRotationTime only if it's zero (e.g. first ever open for this logger instance)
-		// This prevents overwriting it if openExistingOrNew re-opened an existing file without rotation.
 		if l.lastRotationTime.IsZero() {
-			l.lastRotationTime = currentTime()
+			// Initialize to 'now' so interval/minute checks start from here.
+			l.lastRotationTime = now
 		}
 	}
 
-	// Time-based rotation (due to RotationInterval)
-	if l.RotationInterval > 0 && currentTime().Sub(l.lastRotationTime) >= l.RotationInterval {
+	// 1) Interval-based rotation
+	if l.RotationInterval > 0 && now.Sub(l.lastRotationTime) >= l.RotationInterval {
 		if err := l.rotate("time"); err != nil {
 			return 0, fmt.Errorf("interval rotation failed: %w", err)
 		}
-		l.lastRotationTime = currentTime() // Update after successful rotation
+		l.lastRotationTime = now
 	}
 
-	// Size-based rotation
+	// 2) Scheduled-minute rotation (RotateAtMinutes)
+	if len(l.processedRotateAtMinutes) > 0 {
+		for _, m := range l.processedRotateAtMinutes {
+			// Build the exact minute-mark timestamp in the current hour.
+			mark := time.Date(now.Year(), now.Month(), now.Day(),
+				now.Hour(), m, 0, 0, l.location())
+			// If we've crossed that mark since the last rotation, fire one rotation.
+			if l.lastRotationTime.Before(mark) && (mark.Before(now) || mark.Equal(now)) {
+				if err := l.rotate("time"); err != nil {
+					return 0, fmt.Errorf("scheduled-minute rotation failed: %w", err)
+				}
+				// Record the logical mark—so we don’t rerun until next slot.
+				l.lastRotationTime = mark
+				break
+			}
+		}
+	}
+
+	// 3) Size-based rotation
 	if l.size+writeLen > l.max() {
 		if err := l.rotate("size"); err != nil {
 			return 0, fmt.Errorf("size rotation failed: %w", err)
 		}
-		// Note: Original timberjack (and this version) does not update lastRotationTime for size-based rotations.
-		// This means a size-based rotation does not reset the RotationInterval timer.
+		// Note: we leave lastRotationTime untouched for size rotations.
 	}
 
+	// Finally, write the bytes and update size.
 	n, err = l.file.Write(p)
 	l.size += int64(n)
 	return n, err
