@@ -23,12 +23,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const (
@@ -103,6 +105,15 @@ type Logger struct {
 	//
 	// Example: RotationInterval = time.Hour * 24 will rotate logs daily.
 	RotationInterval time.Duration `json:"rotationinterval" yaml:"rotationinterval"`
+
+	// RotationFileSuffixTimeFormat specifies the layout used to format the timestamp
+	// appended to rotated file names. If not set, the default format
+	// "2006-01-02T15-04-05.000" will be used.
+	//
+	// Example: RotationFileSuffixTimeFormat = `2006-01-02-15-04-05` will generate rotated
+	// backup files as <logfilename>-2006-01-02-15-04-05-<rotationCriteron>-timberjack.log.
+	// Here, rotationCriterion could be `time` or `size`.
+	RotationFileSuffixTimeFormat string `json:"rotationfilesuffixtimeformat" yaml:"rotationfilesuffixtimeformat"`
 
 	// Internal
 	size             int64
@@ -212,6 +223,17 @@ func (l *Logger) rotate() error {
 	return nil
 }
 
+// getRotationFileSuffixTimeFormat returns format of timestamp that is used as suffix
+// of the rotated file.
+// If RotationFileSuffixTimeFormat field is not set during Logger creation, then
+// default value of `2006-01-02T15-04-05.000`
+func (l *Logger) getRotationFileSuffixTimeFormat() string {
+	if isValidSuffixTimeFormat(l.RotationFileSuffixTimeFormat) {
+		return l.RotationFileSuffixTimeFormat
+	}
+	return backupTimeFormat
+}
+
 // openNew creates a new log file for writing.
 // If an old log file already exists, it is moved aside by renaming it with a timestamp.
 // This method assumes that the old file has already been closed.
@@ -233,7 +255,8 @@ func (l *Logger) openNew() error {
 		}
 
 		l.logStartTime = currentTime()
-		newname := backupName(name, l.LocalTime, reason, l.logStartTime)
+		rotationSuffixTimeFormat := l.getRotationFileSuffixTimeFormat()
+		newname := backupName(name, l.LocalTime, reason, l.logStartTime, rotationSuffixTimeFormat)
 		if err := os.Rename(name, newname); err != nil {
 			return fmt.Errorf("can't rename log file: %s", err)
 		}
@@ -266,7 +289,7 @@ func (l *Logger) shouldTimeRotate() bool {
 // backupName creates a new backup filename by inserting a timestamp and a rotation reason
 // ("time" or "size") between the filename prefix and the extension.
 // It uses the local time if requested (otherwise UTC).
-func backupName(name string, local bool, reason string, t time.Time) string {
+func backupName(name string, local bool, reason string, t time.Time, fileTimeFormat string) string {
 	dir := filepath.Dir(name)
 	filename := filepath.Base(name)
 	ext := filepath.Ext(filename)
@@ -275,7 +298,7 @@ func backupName(name string, local bool, reason string, t time.Time) string {
 	if !local {
 		t = t.UTC()
 	}
-	timestamp := t.Format(backupTimeFormat)
+	timestamp := t.Format(fileTimeFormat)
 	return filepath.Join(dir, fmt.Sprintf("%s-%s-%s%s", prefix, timestamp, reason, ext))
 }
 
@@ -480,6 +503,73 @@ func (l *Logger) prefixAndExt() (prefix, ext string) {
 	ext = filepath.Ext(filename)
 	prefix = filename[:len(filename)-len(ext)] + "-"
 	return prefix, ext
+}
+
+// isValidSuffixTimeFormat determines the validity of the `layout` as a format for time.Time.
+// Counts the number of digits after `.` in the layout format and compares till that precision.
+//
+// Internally, it generates a time.Time value with millisecond as lowest precision.
+// This generated time.Time value is used to format time in the given `layout`.
+// Using the formatted string, we construct a time.Time value to compare with original time.Time
+func isValidSuffixTimeFormat(layout string) bool {
+	if layout == "" {
+		return false
+	}
+	// 2025-05-22 23:41:59.987654321 +0000 UTC
+	now := time.Date(2025, 05, 22, 23, 41, 59, 987_654_321, time.UTC)
+
+	layoutPrecision := countDigitsAfterDot(layout)
+
+	now, err := truncateFractional(now, layoutPrecision)
+
+	if err != nil {
+		return false
+	}
+	formatted := now.Format(layout)
+	parsedT, err := time.Parse(layout, formatted)
+	return parsedT.Equal(now) && err == nil
+}
+
+// countDigitsAfterDot counts the number of digits after a `.`.
+// It won't care about prefix of `.` and only counts first set of digits after `.`.
+
+// Example: `prefix.0012304123suffix` would return 10
+// Example: `prefix.0012304_middle_123_suffix` would return 7
+func countDigitsAfterDot(layout string) int {
+	for i, ch := range layout {
+		if ch == '.' {
+			count := 0
+			for _, c := range layout[i+1:] {
+				if unicode.IsDigit(c) {
+					count++
+				} else {
+					break
+				}
+			}
+			return count
+		}
+	}
+	return 0 // no '.' found or no digits after dot
+}
+
+// truncateFractional truncates time t to n fractional digits of seconds.
+// n=0 → truncate to seconds, n=3 → milliseconds, n=6 → microseconds, etc.
+func truncateFractional(t time.Time, n int) (time.Time, error) {
+	if n < 0 || n > 9 {
+		return time.Now(), errors.New("n must be between 0 and 9")
+	}
+	// number of nanoseconds to keep
+	factor := math.Pow10(9 - n) // e.g. for n=3, factor=10^(9-3)=1,000,000
+
+	nanos := t.Nanosecond()
+	truncatedNanos := int((int64(nanos) / int64(factor)) * int64(factor))
+
+	return time.Date(
+		t.Year(), t.Month(), t.Day(),
+		t.Hour(), t.Minute(), t.Second(),
+		truncatedNanos,
+		t.Location(),
+	), nil
 }
 
 // compressLogFile compresses the given log file, removing the
