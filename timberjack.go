@@ -124,6 +124,8 @@ type Logger struct {
 	mu        sync.Mutex
 	millCh    chan bool
 	startMill sync.Once
+
+	isSuffixTimeFormatValidated bool // this flag helps prevent repeated validation checks on supplied layout
 }
 
 var (
@@ -228,10 +230,16 @@ func (l *Logger) rotate() error {
 // If RotationFileSuffixTimeFormat field is not set during Logger creation, then
 // default value of `2006-01-02T15-04-05.000`
 func (l *Logger) getRotationFileSuffixTimeFormat() string {
-	if isValidSuffixTimeFormat(l.RotationFileSuffixTimeFormat) {
-		return l.RotationFileSuffixTimeFormat
+	if !l.isSuffixTimeFormatValidated {
+		if isValidSuffixTimeFormat(l.RotationFileSuffixTimeFormat) {
+			l.isSuffixTimeFormatValidated = true
+			return l.RotationFileSuffixTimeFormat
+		}
+		// supplied time format is invalid. So replacing it with backup format
+		l.isSuffixTimeFormatValidated = true
+		l.RotationFileSuffixTimeFormat = backupTimeFormat
 	}
-	return backupTimeFormat
+	return l.RotationFileSuffixTimeFormat
 }
 
 // openNew creates a new log file for writing.
@@ -508,7 +516,7 @@ func (l *Logger) prefixAndExt() (prefix, ext string) {
 // isValidSuffixTimeFormat determines the validity of the `layout` as a format for time.Time.
 // Counts the number of digits after `.` in the layout format and compares till that precision.
 //
-// Internally, it generates a time.Time value with millisecond as lowest precision.
+// Internally, it generates a time.Time value with required precision.
 // This generated time.Time value is used to format time in the given `layout`.
 // Using the formatted string, we construct a time.Time value to compare with original time.Time
 func isValidSuffixTimeFormat(layout string) bool {
