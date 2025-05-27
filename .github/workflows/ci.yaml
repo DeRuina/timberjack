@@ -1,4 +1,4 @@
-name: Go CI
+name: Go Versions
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-
+    name: Go versions
     runs-on: ubuntu-latest
 
     strategy:

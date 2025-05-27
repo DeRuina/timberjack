@@ -1,4 +1,4 @@
-# timberjack [![Go Reference](https://pkg.go.dev/badge/github.com/DeRuina/timberjack.svg)](https://pkg.go.dev/github.com/DeRuina/timberjack) [![Go Report Card](https://goreportcard.com/badge/github.com/DeRuina/timberjack)](https://goreportcard.com/report/github.com/DeRuina/timberjack) ![Build Status](https://github.com/DeRuina/timberjack/actions/workflows/ci.yml/badge.svg) ![Version](https://img.shields.io/github/v/tag/DeRuina/timberjack?sort=semver)
+# timberjack [![Go Reference](https://pkg.go.dev/badge/github.com/DeRuina/timberjack.svg)](https://pkg.go.dev/github.com/DeRuina/timberjack) [![Go Report Card](https://goreportcard.com/badge/github.com/DeRuina/timberjack)](https://goreportcard.com/report/github.com/DeRuina/timberjack) ![Audit](https://github.com/DeRuina/timberjack/actions/workflows/audit.yaml/badge.svg) ![Version](https://img.shields.io/github/v/tag/DeRuina/timberjack?sort=semver)
 
 
 ### Timberjack is a Go package for writing logs to rolling files.
@@ -101,6 +101,12 @@ When a new log file is created:
 - Older backups beyond `MaxBackups` are deleted.
 - Files older than `MaxAge` days are deleted.
 - If `Compress` is true, older files are gzip-compressed.
+
+
+## Contributing
+
+We welcome contributions!  
+Please see our [contributing guidelines](CONTRIBUTING.md) before submitting a pull request.
 
 
 ## License
