@@ -538,8 +538,10 @@ func isValidSuffixTimeFormat(layout string) bool {
 	return parsedT.Equal(now) && err == nil
 }
 
-// countDigitsAfterDot counts the number of digits after a `.`.
-// It won't care about prefix of `.` and only counts first set of digits after `.`.
+// countDigitsAfterDot returns the number of consecutive digit characters
+// immediately following the first '.' in the input.
+// It skips all characters before the '.' and stops counting at the first non-digit
+// character after the '.'.
 
 // Example: `prefix.0012304123suffix` would return 10
 // Example: `prefix.0012304_middle_123_suffix` would return 7
