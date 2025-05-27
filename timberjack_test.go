@@ -811,3 +811,95 @@ func TestTimeBasedRotation(t *testing.T) {
 		t.Fatalf("expected rotated backup file with original contents, but none found")
 	}
 }
+
+func TestSuffixTimeFormat(t *testing.T) {
+	// parses correctly with err == nil, but parsed time.Time won't match the supplied time.Time
+	invalidFormat := "2006-15-05 23:20:53"
+	isValid := isValidSuffixTimeFormat(invalidFormat)
+	if isValid {
+		t.Fatalf("invalid timestamp layout determined as valid")
+	}
+	validFormat := `2006-01-02-15-05-44.000`
+	isValid = isValidSuffixTimeFormat(validFormat)
+	if !isValid {
+		t.Errorf("valid timestamp layout determined as invalid")
+	}
+	validFormat2 := `2006-01-02-15-05-44.00000` // precision upto 5 digits after .
+	isValid = isValidSuffixTimeFormat(validFormat2)
+	if !isValid {
+		t.Errorf("valid timestamp2 layout determined as invalid")
+	}
+	validFormat3 := `2006-01-02-15-05-44.0000000` // precision upto 7 digits after .
+	isValid = isValidSuffixTimeFormat(validFormat3)
+	if !isValid {
+		t.Errorf("valid timestamp2 layout determined as invalid")
+	}
+}
+
+func TestCountDigitsAfterDot(t *testing.T) {
+	tests := []struct {
+		layout   string
+		expected int
+	}{
+		{"2006-01-02 15:04:05", 0},           // no dot
+		{"2006-01-02 15:04:05.000", 3},       // exactly 3 digits
+		{"2006-01-02 15:04:05.000000", 6},    // 6 digits
+		{"2006-01-02 15:04:05.999999999", 9}, // 9 digits
+		{"2006-01-02 15:04:05.12345abc", 5},  // digits then letters
+		{"2006-01-02 15:04:05.", 0},          // dot but no digits
+		{".1234", 4},                         // string starts with dot + digits
+		{"prefix.987suffix", 3},              // digits then letters after dot
+		{"no_digits_after_dot.", 0},          // dot at end
+		{"no.dot.in.string", 0},              // dot but not fractional part
+	}
+
+	for _, test := range tests {
+		got := countDigitsAfterDot(test.layout)
+		if got != test.expected {
+			t.Errorf("countDigitsAfterDot(%q) = %d; want %d", test.layout, got, test.expected)
+		}
+	}
+}
+
+func TestTruncateFractional(t *testing.T) {
+	baseTime := time.Date(2025, 5, 23, 14, 30, 45, 987654321, time.UTC)
+
+	tests := []struct {
+		n         int
+		wantNanos int
+		wantErr   bool
+	}{
+		{n: 0, wantNanos: 0, wantErr: false},         // truncate to seconds
+		{n: 1, wantNanos: 900000000, wantErr: false}, // 1 digit fractional (100ms)
+		{n: 3, wantNanos: 987000000, wantErr: false}, // milliseconds
+		{n: 5, wantNanos: 987650000, wantErr: false}, // upto 5 digits
+		{n: 6, wantNanos: 987654000, wantErr: false}, // microseconds
+		{n: 7, wantNanos: 987654300, wantErr: false}, // upto 7 digits
+		{n: 9, wantNanos: 987654321, wantErr: false}, // nanoseconds, no truncation
+		{n: -1, wantNanos: 0, wantErr: true},         // invalid low
+		{n: 10, wantNanos: 0, wantErr: true},         // invalid high
+	}
+
+	for _, tt := range tests {
+		got, err := truncateFractional(baseTime, tt.n)
+
+		if (err != nil) != tt.wantErr {
+			t.Errorf("truncateFractional(_, %d) error = %v, wantErr %v", tt.n, err, tt.wantErr)
+			continue
+		}
+		if err != nil {
+			continue // don't check time if error expected
+		}
+
+		if got.Nanosecond() != tt.wantNanos {
+			t.Errorf("truncateFractional(_, %d) Nanosecond = %d; want %d", tt.n, got.Nanosecond(), tt.wantNanos)
+		}
+
+		// Verify that other time components are unchanged
+		if got.Year() != baseTime.Year() || got.Month() != baseTime.Month() ||
+			got.Day() != baseTime.Day() || got.Hour() != baseTime.Hour() ||
+			got.Minute() != baseTime.Minute() || got.Second() != baseTime.Second() {
+			t.Errorf("truncateFractional(_, %d) modified time components", tt.n)
+		}
+	}
+}
