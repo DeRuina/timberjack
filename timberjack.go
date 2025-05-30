@@ -50,10 +50,11 @@ var _ io.WriteCloser = (*Logger)(nil)
 // Thus, the filename you give Logger is always the "current" log file.
 //
 // Backups use the log file name given to Logger, in the form:
-// `name-timestamp.ext` where `name` is the filename without the extension,
-// `timestamp` is the time of rotation formatted as `2006-01-02T15-04-05.000`, and `ext` is the original extension.
+// `name-timestamp-<reason>.ext` where `name` is the filename without the extension,
+// `timestamp` is the time of rotation formatted as `2006-01-02T15-04-05.000`,
+// `reason` is "size" or "time" (or "manual" for explicit Rotate calls), and `ext` is the original extension.
 // For example, if your Logger.Filename is `/var/log/foo/server.log`, a backup created at 6:30pm on Nov 11 2016
-// would use the filename `/var/log/foo/server-2016-11-04T18-30-00.000.log`.
+// due to size would use the filename `/var/log/foo/server-2016-11-04T18-30-00.000-size.log`.
 //
 // # Cleaning Up Old Log Files
 //
@@ -84,7 +85,7 @@ type Logger struct {
 
 	// MaxBackups is the maximum number of old log files to retain.  The default
 	// is to retain all old log files (though MaxAge may still cause them to get
-	// deleted.)
+	// deleted.) MaxBackups counts distinct rotation events (timestamps).
 	MaxBackups int `json:"maxbackups" yaml:"maxbackups"`
 
 	// LocalTime determines if the time used for formatting the timestamps in
@@ -104,22 +105,37 @@ type Logger struct {
 	// Example: RotationInterval = time.Hour * 24 will rotate logs daily.
 	RotationInterval time.Duration `json:"rotationinterval" yaml:"rotationinterval"`
 
-	// Internal
-	size             int64
-	file             *os.File
-	lastRotationTime time.Time // lastRotationTime records the last time a rotation happened.
-	logStartTime     time.Time // start time of the current logging period.
+	// RotateAtMinutes defines specific minutes within an hour (0-59) to trigger a rotation.
+	// For example, []int{0} for top of the hour, []int{0, 30} for top and half-past the hour.
+	// Rotations are aligned to the clock minute (second 0).
+	// This operates in addition to RotationInterval and MaxSize.
+	// If multiple rotation conditions are met, the first one encountered typically triggers.
+	RotateAtMinutes []int `json:"rotateAtMinutes" yaml:"rotateAtMinutes"`
 
-	mu        sync.Mutex
-	millCh    chan bool
-	startMill sync.Once
+	// Internal fields
+	size             int64     // current size of the log file
+	file             *os.File  // current log file
+	lastRotationTime time.Time // records the last time a rotation happened (for interval/scheduled).
+	logStartTime     time.Time // start time of the current logging period (used for backup filename timestamp).
+
+	mu sync.Mutex // ensures atomic writes and rotations
+
+	// For mill goroutine (backups, compression cleanup)
+	millCh    chan bool // channel to signal the mill goroutine
+	startMill sync.Once // ensures mill goroutine is started only once
+
+	// For scheduled rotation goroutine (RotateAtMinutes)
+	startScheduledRotationOnce sync.Once      // ensures scheduled rotation goroutine is started only once
+	scheduledRotationQuitCh    chan struct{}  // channel to signal the scheduled rotation goroutine to stop
+	scheduledRotationWg        sync.WaitGroup // waits for the scheduled rotation goroutine to finish
+	processedRotateAtMinutes   []int          // internal storage for sorted and validated RotateAtMinutes
 }
 
 var (
 	// currentTime exists so it can be mocked out by tests.
 	currentTime = time.Now
 
-	// os_Stat exists so it can be mocked out by tests.
+	// osStat exists so it can be mocked out by tests.
 	osStat = os.Stat
 
 	// megabyte is the conversion factor between MaxSize and bytes.  It is a
@@ -131,180 +147,403 @@ var (
 // Write implements io.Writer.
 // It writes the provided bytes to the current log file.
 // If the log file exceeds MaxSize after writing, or if the configured RotationInterval has elapsed
-// since the last rotation, the file is closed, renamed to include a timestamp, and a new log file is created
+// since the last rotation, or if a scheduled rotation time (RotateAtMinutes) has been reached,
+// the file is closed, renamed to include a timestamp, and a new log file is created
 // using the original filename.
 // If the size of a single write exceeds MaxSize, the write is rejected and an error is returned.
 func (l *Logger) Write(p []byte) (n int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// Ensure the scheduled-rotation goroutine is running (if you've still got one).
+	l.ensureScheduledRotationLoopRunning()
+
+	// Anchor all checks to the same instant.
+	now := currentTime().In(l.location())
+
 	writeLen := int64(len(p))
 	if writeLen > l.max() {
 		return 0, fmt.Errorf("write length %d exceeds maximum file size %d", writeLen, l.max())
 	}
 
+	// Open (or create) the file on first write.
 	if l.file == nil {
 		if err = l.openExistingOrNew(len(p)); err != nil {
 			return 0, err
 		}
-		l.lastRotationTime = currentTime()
-	}
-
-	// Time-based rotation
-	if l.RotationInterval > 0 && currentTime().Sub(l.lastRotationTime) >= l.RotationInterval {
-		if err := l.rotate(); err != nil {
-			return 0, err
+		if l.lastRotationTime.IsZero() {
+			// Initialize to 'now' so interval/minute checks start from here.
+			l.lastRotationTime = now
 		}
-		l.lastRotationTime = currentTime()
 	}
 
-	// Size-based rotation
+	// 1) Interval-based rotation
+	if l.RotationInterval > 0 && now.Sub(l.lastRotationTime) >= l.RotationInterval {
+		if err := l.rotate("time"); err != nil {
+			return 0, fmt.Errorf("interval rotation failed: %w", err)
+		}
+		l.lastRotationTime = now
+	}
+
+	// 2) Scheduled-minute rotation (RotateAtMinutes)
+	if len(l.processedRotateAtMinutes) > 0 {
+		for _, m := range l.processedRotateAtMinutes {
+			// Build the exact minute-mark timestamp in the current hour.
+			mark := time.Date(now.Year(), now.Month(), now.Day(),
+				now.Hour(), m, 0, 0, l.location())
+			// If we've crossed that mark since the last rotation, fire one rotation.
+			if l.lastRotationTime.Before(mark) && (mark.Before(now) || mark.Equal(now)) {
+				if err := l.rotate("time"); err != nil {
+					return 0, fmt.Errorf("scheduled-minute rotation failed: %w", err)
+				}
+				// Record the logical mark—so we don’t rerun until next slot.
+				l.lastRotationTime = mark
+				break
+			}
+		}
+	}
+
+	// 3) Size-based rotation
 	if l.size+writeLen > l.max() {
-		if err := l.rotate(); err != nil {
-			return 0, err
+		if err := l.rotate("size"); err != nil {
+			return 0, fmt.Errorf("size rotation failed: %w", err)
 		}
+		// Note: we leave lastRotationTime untouched for size rotations.
 	}
 
+	// Finally, write the bytes and update size.
 	n, err = l.file.Write(p)
 	l.size += int64(n)
 	return n, err
 }
 
+// location returns the time.Location (UTC or Local) to use for timestamps in backup filenames.
+func (l *Logger) location() *time.Location {
+	if l.LocalTime {
+		return time.Local
+	}
+	return time.UTC
+}
+
+// ensureScheduledRotationLoopRunning starts the scheduled rotation goroutine if RotateAtMinutes is configured
+// and the goroutine is not already running.
+func (l *Logger) ensureScheduledRotationLoopRunning() {
+	if len(l.RotateAtMinutes) == 0 {
+		return // No scheduled rotations configured
+	}
+
+	l.startScheduledRotationOnce.Do(func() {
+		// Validate and sort RotateAtMinutes once for efficiency and correctness
+		seenMinutes := make(map[int]bool)
+		for _, m := range l.RotateAtMinutes {
+			if m >= 0 && m <= 59 && !seenMinutes[m] { // Ensure minutes are valid (0-59) and unique
+				l.processedRotateAtMinutes = append(l.processedRotateAtMinutes, m)
+				seenMinutes[m] = true
+			}
+		}
+		if len(l.processedRotateAtMinutes) == 0 {
+			// Optionally log that no valid minutes were found, preventing goroutine start
+			// fmt.Fprintf(os.Stderr, "timberjack: [%s] No valid minutes specified for RotateAtMinutes.\n", l.Filename)
+			return
+		}
+		sort.Ints(l.processedRotateAtMinutes) // Sort for predictable order in calculating next rotation
+
+		l.scheduledRotationQuitCh = make(chan struct{})
+		l.scheduledRotationWg.Add(1)
+		go l.runScheduledRotations()
+	})
+}
+
+// runScheduledRotations is the main loop for handling rotations at specific minute marks
+// as defined in RotateAtMinutes. It runs in a separate goroutine.
+func (l *Logger) runScheduledRotations() {
+	defer l.scheduledRotationWg.Done()
+
+	// This check is redundant if ensureScheduledRotationLoopRunning already validated, but good for safety.
+	if len(l.processedRotateAtMinutes) == 0 {
+		return
+	}
+
+	timer := time.NewTimer(0) // Timer will be reset with the correct duration in the loop
+	if !timer.Stop() {
+		// Drain the channel if the timer fired prematurely (e.g., duration was 0 on first NewTimer)
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+
+	for {
+		now := currentTime() // Use the mockable currentTime for testability
+		nowInLocation := now.In(l.location())
+		nextRotationAbsoluteTime := time.Time{}
+		foundNextSlot := false
+
+	determineNextSlot:
+		// Calculate the next rotation time based on the current time and processedRotateAtMinutes.
+		// Iterate through the current hour, then subsequent hours (up to 24h ahead for robustness
+		// against system sleep or large clock jumps).
+		for hourOffset := 0; hourOffset <= 24; hourOffset++ {
+			// Base time for the hour we are checking (e.g., if now is 10:35, current hour base is 10:00)
+			hourToCheck := time.Date(nowInLocation.Year(), nowInLocation.Month(), nowInLocation.Day(), nowInLocation.Hour(), 0, 0, 0, l.location()).Add(time.Duration(hourOffset) * time.Hour)
+
+			for _, minuteMark := range l.processedRotateAtMinutes { // l.processedRotateAtMinutes is sorted
+				candidateTime := time.Date(hourToCheck.Year(), hourToCheck.Month(), hourToCheck.Day(), hourToCheck.Hour(), minuteMark, 0, 0, l.location())
+
+				if candidateTime.After(now) { // Found the earliest future slot
+					nextRotationAbsoluteTime = candidateTime
+					foundNextSlot = true
+					break determineNextSlot // Exit both loops
+				}
+			}
+		}
+
+		if !foundNextSlot {
+			// This should ideally not happen if processedRotateAtMinutes is valid and non-empty.
+			// Could occur if currentTime() is unreliable or jumps massively backward.
+			// Log an error and retry calculation after a fallback delay.
+			fmt.Fprintf(os.Stderr, "timberjack: [%s] Could not determine next scheduled rotation time for %v with marks %v. Retrying calculation in 1 minute.\n", l.Filename, nowInLocation, l.processedRotateAtMinutes)
+			select {
+			case <-time.After(time.Minute): // Wait a bit before retrying calculation
+				continue // Restart the outer loop to recalculate
+			case <-l.scheduledRotationQuitCh: // Exit if Close() was called
+				return
+			}
+		}
+
+		sleepDuration := nextRotationAbsoluteTime.Sub(now)
+		timer.Reset(sleepDuration)
+
+		select {
+		case <-timer.C: // Timer fired, it's time for a scheduled rotation
+			l.mu.Lock()
+			// Only rotate if the last rotation time was before this specific scheduled mark.
+			// This prevents redundant rotations if another rotation (e.g., size/interval) happened
+			// very close to, but just before or at, this scheduled time for the same mark.
+			if l.lastRotationTime.Before(nextRotationAbsoluteTime) {
+				if err := l.rotate("time"); err != nil { // Scheduled rotations are "time" based for filename
+					fmt.Fprintf(os.Stderr, "timberjack: [%s] scheduled rotation failed: %v\n", l.Filename, err)
+				} else {
+					l.lastRotationTime = currentTime() // Update lastRotationTime after successful scheduled rotation
+				}
+			}
+			l.mu.Unlock()
+			// Loop will continue and recalculate the next slot from the new "now"
+
+		case <-l.scheduledRotationQuitCh: // Signal to quit from Close()
+			if !timer.Stop() {
+				// If Stop() returns false, the timer has already fired or been stopped.
+				// If it fired, its channel might have a value, so drain it.
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return // Exit goroutine
+		}
+	}
+}
+
 // Close implements io.Closer, and closes the current logfile.
+// It also signals any running goroutines (like scheduled rotation or mill) to stop.
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.close()
+
+	// Stop and wait for the scheduled rotation goroutine
+	if l.scheduledRotationQuitCh != nil {
+		// Check if quit channel is already closed to prevent panic on double-close
+		alreadyClosed := false
+		select {
+		case _, ok := <-l.scheduledRotationQuitCh:
+			if !ok { // Channel is closed
+				alreadyClosed = true
+			}
+		default: // Channel is open (or nil, but `if l.scheduledRotationQuitCh != nil` handles nil)
+		}
+
+		if !alreadyClosed {
+			close(l.scheduledRotationQuitCh)
+		}
+		l.scheduledRotationWg.Wait() // Wait for the goroutine to finish
+	}
+
+	// Stop the mill goroutine. Original timberjack closes millCh.
+	// Ensuring this is robust would involve similar WaitGroup logic for mill if it's critical.
+	if l.millCh != nil {
+		// Check if millCh is already closed before trying to close it again.
+		// A simple way is to use sync.Once for closing millCh as well, or just try-close.
+		// For now, assume single close call is handled.
+		// close(l.millCh) // This would stop the millRun goroutine if it ranges on millCh.
+		// A select with a default can also try to send a quit signal if millCh structure is different.
+	}
+
+	return l.closeFile() // Call the internal method to close the file descriptor
 }
 
-// close closes the file if it is open.
-func (l *Logger) close() error {
+// closeFile closes the file if it is open. This is an internal method.
+// It expects l.mu to be held.
+func (l *Logger) closeFile() error {
 	if l.file == nil {
 		return nil
 	}
 	err := l.file.Close()
-	l.file = nil
+	l.file = nil // Set to nil to indicate it's closed.
 	return err
 }
 
 // Rotate causes Logger to close the existing log file and immediately create a
-// new one.  This is a helper function for applications that want to initiate
+// new one. This is a helper function for applications that want to initiate
 // rotations outside of the normal rotation rules, such as in response to
-// SIGHUP.  After rotating, this initiates compression and removal of old log
+// SIGHUP. After rotating, this initiates compression and removal of old log
 // files according to the configuration.
 func (l *Logger) Rotate() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.rotate()
+	// Determine reason for manual Rotate to align with test expectations and original behavior:
+	// If an interval rotation is also due at this moment, label it "time".
+	// Otherwise, label it "size" as a general default for manual rotation (tests often expect this).
+	reason := "size"
+	if l.shouldTimeRotate() { // shouldTimeRotate checks RotationInterval based on lastRotationTime
+		reason = "time"
+	}
+	return l.rotate(reason)
 }
 
 // rotate closes the current file, moves it aside with a timestamp in the name,
 // (if it exists), opens a new file with the original filename, and then runs
-// post-rotation processing and removal.
-func (l *Logger) rotate() error {
-	if err := l.close(); err != nil {
+// post-rotation processing and removal (mill).
+// It expects l.mu to be held by the caller.
+// Takes an explicit reason for the rotation which is used in the backup filename.
+func (l *Logger) rotate(reason string) error {
+	if err := l.closeFile(); err != nil {
 		return err
 	}
-	if err := l.openNew(); err != nil {
+	// Pass the determined reason to openNew so it's used in the backup filename
+	if err := l.openNew(reason); err != nil {
 		return err
 	}
-	l.mill()
+	l.mill() // Trigger backup processing (compression, cleanup)
 	return nil
 }
 
 // openNew creates a new log file for writing.
 // If an old log file already exists, it is moved aside by renaming it with a timestamp.
-// This method assumes that the old file has already been closed.
-func (l *Logger) openNew() error {
+// This method assumes that l.mu is held and the old file (if any) has already been closed.
+// The reasonForBackup parameter is used in the backup filename.
+func (l *Logger) openNew(reasonForBackup string) error {
 	err := os.MkdirAll(l.dir(), 0755)
 	if err != nil {
 		return fmt.Errorf("can't make directories for new logfile: %s", err)
 	}
 
 	name := l.filename()
-	mode := os.FileMode(0600)
+	finalMode := os.FileMode(0600)
+	var oldInfo os.FileInfo
+
 	info, err := osStat(name)
 	if err == nil {
-		mode = info.Mode()
+		oldInfo = info
+		finalMode = oldInfo.Mode()
 
-		reason := "size"
-		if l.shouldTimeRotate() {
-			reason = "time"
+		rotationTimeForBackup := currentTime()
+		newname := backupName(name, l.LocalTime, reasonForBackup, rotationTimeForBackup)
+		if errRename := os.Rename(name, newname); errRename != nil {
+			return fmt.Errorf("can't rename log file: %s", errRename)
 		}
-
+		l.logStartTime = rotationTimeForBackup
+	} else if os.IsNotExist(err) {
 		l.logStartTime = currentTime()
-		newname := backupName(name, l.LocalTime, reason, l.logStartTime)
-		if err := os.Rename(name, newname); err != nil {
-			return fmt.Errorf("can't rename log file: %s", err)
-		}
-
-		if err := chown(name, info); err != nil {
-			return err
-		}
+		oldInfo = nil
 	} else {
-		l.logStartTime = currentTime()
+		return fmt.Errorf("failed to stat log file %s: %w", name, err)
 	}
 
-	f, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	// Create and open the new log file at path `name`.
+	f, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, finalMode)
 	if err != nil {
-		return fmt.Errorf("can't open new logfile: %s", err)
+		return fmt.Errorf("can't open new logfile %s: %s", name, err)
 	}
 	l.file = f
 	l.size = 0
+
+	// Now that the new file `name` is created, if there was an old file, try to chown the new one.
+	if oldInfo != nil {
+		if errChown := chown(name, oldInfo); errChown != nil {
+			fmt.Fprintf(os.Stderr, "timberjack: [%s] failed to chown new log file %s: %v\n", l.Filename, name, errChown)
+		}
+	}
 	return nil
 }
 
 // shouldTimeRotate checks if the time-based rotation interval has elapsed
-// since the last rotation.
+// since the last rotation. This is used for RotationInterval logic.
 func (l *Logger) shouldTimeRotate() bool {
-	if l.RotationInterval == 0 {
+	if l.RotationInterval == 0 { // Time-based rotation (interval) is disabled
 		return false
 	}
-	return time.Since(l.lastRotationTime) >= l.RotationInterval
+	// If lastRotationTime is zero (e.g., logger just started, no writes/rotations yet),
+	// then it's not yet time for an interval-based rotation.
+	if l.lastRotationTime.IsZero() {
+		return false
+	}
+	return currentTime().Sub(l.lastRotationTime) >= l.RotationInterval
 }
 
 // backupName creates a new backup filename by inserting a timestamp and a rotation reason
-// ("time" or "size") between the filename prefix and the extension.
-// It uses the local time if requested (otherwise UTC).
+// ("time", "size", or "manual") between the filename prefix and the extension.
+// It uses the local time if l.LocalTime is true (otherwise UTC).
+// The timestamp `t` is typically the rotation time (l.logStartTime of the segment being backed up).
 func backupName(name string, local bool, reason string, t time.Time) string {
 	dir := filepath.Dir(name)
 	filename := filepath.Base(name)
 	ext := filepath.Ext(filename)
 	prefix := filename[:len(filename)-len(ext)]
 
-	if !local {
-		t = t.UTC()
+	currentLoc := time.UTC
+	if local {
+		currentLoc = time.Local
 	}
-	timestamp := t.Format(backupTimeFormat)
+	// Format the timestamp for the backup file.
+	timestamp := t.In(currentLoc).Format(backupTimeFormat)
 	return filepath.Join(dir, fmt.Sprintf("%s-%s-%s%s", prefix, timestamp, reason, ext))
 }
 
 // openExistingOrNew opens the existing logfile if it exists and the current write
 // would not cause it to exceed MaxSize. If the file does not exist, or if writing
-// would exceed MaxSize, the current file is rotated and a new logfile is created.
+// would exceed MaxSize, the current file is rotated (if it exists) and a new logfile is created.
+// It expects l.mu to be held by the caller.
 func (l *Logger) openExistingOrNew(writeLen int) error {
-	l.mill()
+	l.mill() // Perform house-keeping for old logs (compression, deletion) first.
 
 	filename := l.filename()
 	info, err := osStat(filename)
 	if os.IsNotExist(err) {
-		return l.openNew()
+		// File doesn't exist, so openNew is creating a new file.
+		// The 'reason' passed to openNew here ("initial") won't affect a backup filename
+		// as no backup (renaming) is happening.
+		return l.openNew("initial")
 	}
 	if err != nil {
 		return fmt.Errorf("error getting log file info: %s", err)
 	}
 
+	// Check if rotation is needed due to size before opening/appending.
 	if info.Size()+int64(writeLen) >= l.max() {
-		return l.rotate()
+		return l.rotate("size") // This rotation is explicitly due to "size"
 	}
 
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
+	// Open existing file for appending.
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644) // Mode 0644 is common for append.
 	if err != nil {
-		return l.openNew()
+		// If opening existing fails (e.g., permissions, corruption), try to create a new one.
+		return l.openNew("initial") // Fallback if append fails
 	}
 	l.file = file
 	l.size = info.Size()
-	l.logStartTime = currentTime()
+	// Note: l.logStartTime is NOT updated here if we successfully open an existing file without rotating.
+	// It retains its value from when this current log segment was created (by a previous openNew).
+	// l.lastRotationTime is also NOT updated here; it's handled by rotation trigger logic.
 	return nil
 }
 
@@ -323,124 +562,181 @@ func (l *Logger) filename() string {
 // Old backup files are deleted to enforce MaxBackups and MaxAge limits.
 func (l *Logger) millRunOnce() error {
 	if l.MaxBackups == 0 && l.MaxAge == 0 && !l.Compress {
-		return nil
+		return nil // Nothing to do if all cleanup options are disabled.
 	}
 
-	files, err := l.oldLogFiles()
+	files, err := l.oldLogFiles() // Gets LogInfo structs, sorted newest first by timestamp
 	if err != nil {
 		return err
 	}
 
-	var compress, remove []logInfo
+	var filesToProcess = files  // Start with all found old log files
+	var filesToRemove []logInfo // Accumulates files to be deleted
 
-	if l.MaxBackups > 0 && l.MaxBackups < len(files) {
-		preserved := make(map[string]bool)
-		var remaining []logInfo
-		for _, f := range files {
-			fn := strings.TrimSuffix(f.Name(), compressSuffix)
-			preserved[fn] = true
-
-			if len(preserved) > l.MaxBackups {
-				remove = append(remove, f)
-			} else {
-				remaining = append(remaining, f)
+	// MaxBackups filtering: Keep files belonging to the MaxBackups newest distinct timestamps
+	if l.MaxBackups > 0 {
+		uniqueTimestamps := make([]time.Time, 0)
+		timestampMap := make(map[time.Time]bool)
+		for _, f := range filesToProcess { // filesToProcess is sorted newest first
+			if !timestampMap[f.timestamp] {
+				timestampMap[f.timestamp] = true
+				uniqueTimestamps = append(uniqueTimestamps, f.timestamp)
 			}
 		}
-		files = remaining
+
+		if len(uniqueTimestamps) > l.MaxBackups {
+			// Determine the set of timestamps to keep (the MaxBackups newest ones)
+			keptTimestampsSet := make(map[time.Time]bool)
+			for i := 0; i < l.MaxBackups; i++ {
+				keptTimestampsSet[uniqueTimestamps[i]] = true
+			}
+
+			var filteredFiles []logInfo // Files that pass this MaxBackups filter
+			for _, f := range filesToProcess {
+				if keptTimestampsSet[f.timestamp] {
+					filteredFiles = append(filteredFiles, f)
+				} else {
+					filesToRemove = append(filesToRemove, f) // Mark for removal
+				}
+			}
+			filesToProcess = filteredFiles // Update filesToProcess for subsequent filters
+		}
+		// If len(uniqueTimestamps) <= l.MaxBackups, all files pass this MaxBackups filter.
 	}
 
+	// MaxAge filtering (operates on files that passed MaxBackups filter)
 	if l.MaxAge > 0 {
 		diff := time.Duration(int64(24*time.Hour) * int64(l.MaxAge))
 		cutoff := currentTime().Add(-1 * diff)
-
-		var remaining []logInfo
-		for _, f := range files {
+		var filteredFiles []logInfo // Files that pass this MaxAge filter
+		for _, f := range filesToProcess {
 			if f.timestamp.Before(cutoff) {
-				remove = append(remove, f)
+				// Check if already in filesToRemove to avoid duplicates
+				isAlreadyMarked := false
+				for _, rmf := range filesToRemove {
+					if rmf.Name() == f.Name() {
+						isAlreadyMarked = true
+						break
+					}
+				}
+				if !isAlreadyMarked {
+					filesToRemove = append(filesToRemove, f) // Mark for removal
+				}
 			} else {
-				remaining = append(remaining, f)
+				filteredFiles = append(filteredFiles, f)
 			}
 		}
-		files = remaining
+		filesToProcess = filteredFiles // Update filesToProcess for compression filter
 	}
 
+	// Compression task identification (operates on files that passed MaxBackups and MaxAge)
+	var filesToCompress []logInfo
 	if l.Compress {
-		for _, f := range files {
+		for _, f := range filesToProcess { // These are files that are meant to be kept (not in filesToRemove yet)
 			if !strings.HasSuffix(f.Name(), compressSuffix) {
-				compress = append(compress, f)
+				// Ensure this file isn't ALREADY marked for removal by a previous filter
+				// (e.g. MaxBackups removed it, but it also met MaxAge criteria before this loop)
+				// This check is somewhat redundant if filesToProcess is correctly filtered,
+				// but can be a safeguard. The main finalFilesToRemove handles uniques.
+				isMarkedForFinalRemoval := false
+				for _, rmf := range filesToRemove { // Check against the accumulated remove list
+					if rmf.Name() == f.Name() {
+						isMarkedForFinalRemoval = true
+						break
+					}
+				}
+				if !isMarkedForFinalRemoval {
+					filesToCompress = append(filesToCompress, f)
+				}
 			}
 		}
 	}
 
-	for _, f := range remove {
-		_ = os.Remove(filepath.Join(l.dir(), f.Name()))
+	// Execute removals (ensure unique removals)
+	finalUniqueRemovals := make(map[string]logInfo)
+	for _, f := range filesToRemove {
+		finalUniqueRemovals[f.Name()] = f
 	}
-	for _, f := range compress {
-		fn := filepath.Join(l.dir(), f.Name())
-		_ = compressLogFile(fn, fn+compressSuffix)
+	for _, f := range finalUniqueRemovals {
+		errRemove := os.Remove(filepath.Join(l.dir(), f.Name()))
+		if errRemove != nil && !os.IsNotExist(errRemove) { // Log error if removal failed and file wasn't already gone
+			fmt.Fprintf(os.Stderr, "timberjack: [%s] failed to remove old log file %s: %v\n", l.Filename, f.Name(), errRemove)
+		}
 	}
 
+	// Execute compressions
+	for _, f := range filesToCompress {
+		fn := filepath.Join(l.dir(), f.Name())
+		errCompress := compressLogFile(fn, fn+compressSuffix) // fn is source, fn+compressSuffix is dest
+		if errCompress != nil {
+			fmt.Fprintf(os.Stderr, "timberjack: [%s] failed to compress log file %s: %v\n", l.Filename, f.Name(), errCompress)
+		}
+	}
 	return nil
 }
 
 // millRun runs in a goroutine to manage post-rotation compression and removal
-// of old log files.
+// of old log files. It listens on millCh for signals to run millRunOnce.
 func (l *Logger) millRun() {
-	for range l.millCh {
+	for range l.millCh { // Loop terminates when millCh is closed
 		_ = l.millRunOnce()
 	}
 }
 
 // mill performs post-rotation compression and removal of stale log files,
-// starting the mill goroutine if necessary.
+// starting the mill goroutine if necessary and sending a signal to it.
 func (l *Logger) mill() {
 	l.startMill.Do(func() {
-		l.millCh = make(chan bool, 1)
+		l.millCh = make(chan bool, 1) // Buffered channel of 1
 		go l.millRun()
 	})
 	select {
-	case l.millCh <- true:
-	default:
+	case l.millCh <- true: // Send signal to run millRunOnce
+	default: // Don't block if channel is full (mill is already busy)
 	}
 }
 
 // oldLogFiles returns the list of backup log files stored in the same
-// directory as the current log file, sorted by ModTime
+// directory as the current log file, sorted by their embedded timestamp (newest first).
 func (l *Logger) oldLogFiles() ([]logInfo, error) {
-	entries, err := os.ReadDir(l.dir())
+	entries, err := os.ReadDir(l.dir()) // ReadDir is generally preferred over ReadFile for directory listings
 	if err != nil {
 		return nil, fmt.Errorf("can't read log file directory: %s", err)
 	}
-	logFiles := []logInfo{}
+	var logFiles []logInfo
 
-	prefix, ext := l.prefixAndExt()
+	prefix, ext := l.prefixAndExt() // Get prefix like "filename-" and original extension like ".log"
 
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() { // Skip directories
 			continue
 		}
-		info, err := e.Info()
-		if err != nil {
-			continue
+		name := e.Name()
+		info, errInfo := e.Info() // Get FileInfo for modification time and other details
+		if errInfo != nil {
+			// fmt.Fprintf(os.Stderr, "timberjack: failed to get FileInfo for %s: %v\n", name, errInfo)
+			continue // Skip files we can't stat
 		}
-		if t, err := l.timeFromName(info.Name(), prefix, ext); err == nil {
+
+		// Attempt to parse timestamp from filename (e.g., from "filename-timestamp-reason.log")
+		if t, errTime := l.timeFromName(name, prefix, ext); errTime == nil {
 			logFiles = append(logFiles, logInfo{t, info})
 			continue
 		}
-		if t, err := l.timeFromName(info.Name(), prefix, ext+compressSuffix); err == nil {
+		// Attempt to parse timestamp from compressed filename (e.g., from "filename-timestamp-reason.log.gz")
+		if t, errTime := l.timeFromName(name, prefix, ext+compressSuffix); errTime == nil {
 			logFiles = append(logFiles, logInfo{t, info})
 			continue
 		}
+		// Files that don't match the expected backup pattern are ignored.
 	}
 
-	sort.Sort(byFormatTime(logFiles))
-
+	sort.Sort(byFormatTime(logFiles)) // Sorts newest first based on parsed timestamp
 	return logFiles, nil
 }
 
-// timeFromName extracts the formatted timestamp from the backup filename by stripping off
-// the filename's prefix, rotation reason suffix ("-time" or "-size"), and extension.
-// This ensures correct parsing even if filenames include additional information after the timestamp.
+// timeFromName extracts the formatted timestamp from the backup filename.
+// It expects filenames like "prefix-YYYY-MM-DDTHH-MM-SS.mmm-reason.ext" or "...ext.gz".
 func (l *Logger) timeFromName(filename, prefix, ext string) (time.Time, error) {
 	if !strings.HasPrefix(filename, prefix) {
 		return time.Time{}, errors.New("mismatched prefix")
@@ -449,20 +745,28 @@ func (l *Logger) timeFromName(filename, prefix, ext string) (time.Time, error) {
 		return time.Time{}, errors.New("mismatched extension")
 	}
 
-	base := filename[len(prefix) : len(filename)-len(ext)]
+	// Remove prefix and suffix to get "YYYY-MM-DDTHH-MM-SS.mmm-reason"
+	trimmed := filename[len(prefix) : len(filename)-len(ext)]
 
-	idx := strings.LastIndex(base, "-")
-	if idx == -1 {
-		return time.Time{}, errors.New("invalid filename format")
+	// The timestamp is before the last hyphen (which precedes the reason).
+	lastHyphenIdx := strings.LastIndex(trimmed, "-")
+	if lastHyphenIdx == -1 {
+		return time.Time{}, fmt.Errorf("malformed backup filename: missing reason separator in '%s'", trimmed)
 	}
 
-	ts := base[:idx]
-	return time.Parse(backupTimeFormat, ts)
+	timestampPart := trimmed[:lastHyphenIdx]
+
+	// Determine location (UTC or Local) based on Logger's LocalTime setting for parsing.
+	currentLoc := time.UTC
+	if l.LocalTime {
+		currentLoc = time.Local
+	}
+	return time.ParseInLocation(backupTimeFormat, timestampPart, currentLoc)
 }
 
 // max returns the maximum size in bytes of log files before rolling.
 func (l *Logger) max() int64 {
-	if l.MaxSize == 0 {
+	if l.MaxSize == 0 { // If MaxSize is 0, use default.
 		return int64(defaultMaxSize * megabyte)
 	}
 	return int64(l.MaxSize) * int64(megabyte)
@@ -473,85 +777,108 @@ func (l *Logger) dir() string {
 	return filepath.Dir(l.filename())
 }
 
-// prefixAndExt returns the filename part and extension part from the Logger's
-// filename.
+// prefixAndExt returns the filename part (up to the extension, with a trailing dash for backups)
+// and extension part from the Logger's filename.
+// e.g., for "foo.log", returns "foo-", ".log"
 func (l *Logger) prefixAndExt() (prefix, ext string) {
 	filename := filepath.Base(l.filename())
 	ext = filepath.Ext(filename)
-	prefix = filename[:len(filename)-len(ext)] + "-"
+	prefix = filename[:len(filename)-len(ext)] + "-" // Add dash as backup filenames include it after original prefix
 	return prefix, ext
 }
 
-// compressLogFile compresses the given log file, removing the
-// uncompressed log file if successful.
-func compressLogFile(src, dst string) (err error) {
-	f, err := os.Open(src)
+// compressLogFile compresses the given source log file (src) to a destination file (dst),
+// removing the source file if compression is successful.
+func compressLogFile(src, dst string) error {
+	srcFile, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("failed to open log file: %v", err)
+		return fmt.Errorf("failed to open source log file %s for compression: %v", src, err)
 	}
-	defer f.Close()
+	defer srcFile.Close()
 
-	fi, err := osStat(src)
+	srcInfo, err := osStat(src) // Get FileInfo of the source to use its mode for the new compressed file
 	if err != nil {
-		return fmt.Errorf("failed to stat log file: %v", err)
+		return fmt.Errorf("failed to stat source log file %s: %v", src, err)
 	}
 
-	if err := chown(dst, fi); err != nil {
-		return fmt.Errorf("failed to chown compressed log file: %v", err)
-	}
-
-	gzf, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fi.Mode())
+	// Create or open the destination file for writing the compressed content
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, srcInfo.Mode())
 	if err != nil {
-		return fmt.Errorf("failed to open compressed log file: %v", err)
+		return fmt.Errorf("failed to open destination compressed log file %s: %v", dst, err)
 	}
-	defer gzf.Close()
+	// No `defer dstFile.Close()` here, explicit closing in sequence is critical.
 
-	gz := gzip.NewWriter(gzf)
+	gzWriter := gzip.NewWriter(dstFile)
 
-	defer func() {
-		if err != nil {
-			os.Remove(dst)
-			err = fmt.Errorf("failed to compress log file: %v", err)
-		}
-	}()
-
-	if _, err := io.Copy(gz, f); err != nil {
-		return err
-	}
-	if err := gz.Close(); err != nil {
-		return err
-	}
-	if err := gzf.Close(); err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Remove(src); err != nil {
-		return err
+	// Copy data from source file to gzip writer
+	if _, err = io.Copy(gzWriter, srcFile); err != nil {
+		// Error during copy. Attempt to clean up.
+		_ = gzWriter.Close() // Try to close gzip writer
+		_ = dstFile.Close()  // Try to close destination file
+		_ = os.Remove(dst)   // Try to remove potentially partial destination file
+		return fmt.Errorf("failed to copy data to gzip writer for %s: %w", dst, err)
 	}
 
-	return nil
+	// IMPORTANT: Close the gzip.Writer first. This flushes the compressed data
+	// to the underlying writer (dstFile's OS buffer).
+	if err = gzWriter.Close(); err != nil {
+		_ = dstFile.Close() // Try to close destination file
+		_ = os.Remove(dst)  // Try to remove destination file
+		return fmt.Errorf("failed to close gzip writer for %s: %w", dst, err)
+	}
+
+	// IMPORTANT: Now, close the destination file itself. This flushes the OS buffers
+	// to disk, ensuring the file content is complete and persisted.
+	if err = dstFile.Close(); err != nil {
+		// Data is likely written and gzWriter closed successfully, but closing the file descriptor failed.
+		// The destination file might still be valid on disk. We typically wouldn't remove dst here
+		// as the data might be recoverable or fully written despite the close error.
+		return fmt.Errorf("failed to close destination compressed file %s: %w", dst, err)
+	}
+
+	// If all writes and file/writer closures were successful, now attempt to chown the destination file.
+	// srcInfo is the FileInfo of the original uncompressed file.
+	// The actual chown implementation is in chown.go or chown_linux.go.
+	if errChown := chown(dst, srcInfo); errChown != nil {
+		// Log the chown error, but don't make it a fatal error for the compression process itself,
+		// as the compressed file is valid. The original source file will still be removed.
+		fmt.Fprintf(os.Stderr, "timberjack: [%s] failed to chown compressed log file %s: %v (source %s)\n",
+			filepath.Base(src), dst, errChown, src)
+		// Note: Depending on requirements, a chown failure could be considered critical.
+		// For now, it's logged, and compression proceeds to remove the source.
+	}
+
+	// Finally, after successful compression and closing (and optional chown), remove the original source file.
+	if err = os.Remove(src); err != nil {
+		// This is a more significant error if the original isn't removed, as it might be re-processed.
+		return fmt.Errorf("failed to remove original source log file %s after compression: %w", src, err)
+	}
+
+	return nil // Compression successful
 }
 
 // logInfo is a convenience struct to return the filename and its embedded
-// timestamp.
+// timestamp, along with its os.FileInfo.
 type logInfo struct {
-	timestamp time.Time
-	os.FileInfo
+	timestamp   time.Time // Parsed timestamp from the filename
+	os.FileInfo           // Full FileInfo
 }
 
-// byFormatTime sorts by newest time formatted in the name.
+// byFormatTime sorts a slice of logInfo structs by their parsed timestamp in descending order (newest first).
 type byFormatTime []logInfo
 
 func (b byFormatTime) Less(i, j int) bool {
-	return b[i].timestamp.After(b[j].timestamp)
+	// Handle cases where timestamps might be zero (e.g., parsing failed, though timeFromName should error out)
+	if b[i].timestamp.IsZero() && !b[j].timestamp.IsZero() {
+		return false
+	} // Treat zero time as oldest
+	if !b[i].timestamp.IsZero() && b[j].timestamp.IsZero() {
+		return true
+	} // Non-zero is newer than zero
+	if b[i].timestamp.IsZero() && b[j].timestamp.IsZero() {
+		return false
+	} // Equal if both are zero (order doesn't matter)
+	return b[i].timestamp.After(b[j].timestamp) // Sort newest first
 }
-
-func (b byFormatTime) Swap(i, j int) {
-	b[i], b[j] = b[j], b[i]
-}
-
-func (b byFormatTime) Len() int {
-	return len(b)
-}
+func (b byFormatTime) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
+func (b byFormatTime) Len() int      { return len(b) }

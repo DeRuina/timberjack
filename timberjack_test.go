@@ -811,3 +811,118 @@ func TestTimeBasedRotation(t *testing.T) {
 		t.Fatalf("expected rotated backup file with original contents, but none found")
 	}
 }
+
+// TestSizeBasedRotation specifically tests rotation when MaxSize is exceeded.
+func TestSizeBasedRotation(t *testing.T) {
+	currentTime = fakeTime // Ensure our mock time is used
+	megabyte = 1           // For testing with small byte sizes
+
+	dir := makeTempDir("TestSizeBasedRotation", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir) // e.g., /tmp/.../foobar.log
+	l := &Logger{
+		Filename:   filename,
+		MaxSize:    10, // Max size of 10 bytes
+		MaxBackups: 1,
+		LocalTime:  false, // To match backupFileWithReason which uses UTC
+	}
+	defer l.Close()
+
+	// First write: 5 bytes, does not exceed MaxSize (10 bytes)
+	content1 := []byte("Hello") // 5 bytes
+	n, err := l.Write(content1)
+	isNil(err, t)
+	equals(len(content1), n, t)
+	existsWithContent(filename, content1, t)
+	fileCount(dir, 1, t)
+
+	// Advance time for the backup timestamp.
+	// Note: originalFakeTime variable was here and was unused. It has been removed.
+	newFakeTime() // Advances the global fakeCurrentTime
+
+	// Second write: 6 bytes. Current size (5) + new write (6) = 11 bytes, which exceeds MaxSize (10 bytes)
+	content2 := []byte("World!") // 6 bytes
+	n, err = l.Write(content2)
+	isNil(err, t)
+	equals(len(content2), n, t)
+
+	// After rotation:
+	// Current log file should contain only content2
+	existsWithContent(filename, content2, t)
+
+	// Backup file should exist with content1.
+	// backupFileWithReason uses the *current* fakeTime (which was advanced by newFakeTime)
+	// to generate the timestamped name. The rotation timestamp (l.logStartTime for the
+	// backed-up segment, used in backupName) is set to currentTime() when openNew is called.
+	backupFilename := backupFileWithReason(dir, "size")
+	existsWithContent(backupFilename, content1, t)
+
+	fileCount(dir, 2, t)
+}
+
+// TestRotateAtMinutes
+func TestRotateAtMinutes(t *testing.T) {
+	currentTime = fakeTime // use our mock clock
+
+	// three distinct payloads
+	content1 := []byte("first content\n")
+	content2 := []byte("second content\n")
+	content3 := []byte("third content\n")
+
+	// configure 0, 15, and 30 minute marks
+	marks := []int{0, 15, 30}
+
+	// 1) Start just before the 14:00 mark (e.g. 14:00:59 UTC)
+	initial := time.Date(2025, time.May, 12, 14, 0, 59, 0, time.UTC)
+	fakeCurrentTime = initial
+
+	dir := makeTempDir("TestRotateAtMinutes", t)
+	defer os.RemoveAll(dir)
+	filename := logFile(dir)
+
+	l := &Logger{
+		Filename:        filename,
+		RotateAtMinutes: marks,
+		MaxSize:         1000,  // disable size-based rotation
+		LocalTime:       false, // use UTC for backup timestamps
+	}
+	defer l.Close() // stop scheduling goroutine
+
+	// 2) Write at 14:01 → no rotation yet
+	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 1, 0, 0, time.UTC)
+	n, err := l.Write(content1)
+	isNil(err, t)
+	equals(len(content1), n, t)
+	existsWithContent(filename, content1, t)
+	fileCount(dir, 1, t) // only the live logfile
+
+	// 3) Advance to 14:15 exactly, let the goroutine fire
+	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 15, 0, 0, time.UTC)
+	time.Sleep(300 * time.Millisecond)
+
+	// 4) Write at 14:16 → should be on a fresh file, and first-backup is content1
+	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 16, 0, 0, time.UTC)
+	n, err = l.Write(content2)
+	isNil(err, t)
+	equals(len(content2), n, t)
+	existsWithContent(filename, content2, t)
+	expected1 := backupFileWithReason(dir, "time")
+	existsWithContent(expected1, content1, t)
+	fileCount(dir, 2, t)
+
+	// 5) Advance past the 14:30 mark without writing → no new rotation
+	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 30, 0, 0, time.UTC)
+	time.Sleep(300 * time.Millisecond)
+	fileCount(dir, 2, t) // still just the live log + one backup
+
+	// 6) Write at 14:31 → triggers the 30-minute mark rotation, and rolls content2
+	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 31, 0, 0, time.UTC)
+	n, err = l.Write(content3)
+	isNil(err, t)
+	equals(len(content3), n, t)
+	existsWithContent(filename, content3, t)
+	expected2 := backupFileWithReason(dir, "time")
+	existsWithContent(expected2, content2, t)
+	fileCount(dir, 3, t)
+}
