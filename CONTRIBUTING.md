@@ -1,4 +1,4 @@
-# Contributing to Timberjack
+# Contributing to Timberjack test
 
 Thank you for considering contributing to **Timberjack**! Please take a moment to read through these guidelines.
 
