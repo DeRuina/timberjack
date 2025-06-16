@@ -10,6 +10,6 @@ import (
 	"os"
 )
 
-func chown(_ string, _ os.FileInfo) error {
+var chown = func(_ string, _ os.FileInfo) error {
 	return nil
 }

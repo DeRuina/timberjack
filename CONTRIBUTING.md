@@ -60,3 +60,18 @@ This will mark the commit as a major version bump when release automation is use
 - Keep PRs focused and self-contained
 - Use clear, descriptive commit messages
 - If you add a new feature, consider adding an example in the README.
+
+## Code Coverage Requirements
+
+To maintain high-quality tests, all pull requests must meet the following **code coverage** rules:
+
+- Overall coverage must be **at least 85%**
+- Coverage **must not decrease by more than 2.5%**
+
+### How to Check Locally
+
+Before opening a PR, run this to verify your test coverage:
+
+```bash
+go test -covermode=atomic -coverprofile=covprofile ./...
+```

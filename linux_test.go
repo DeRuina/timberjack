@@ -5,6 +5,7 @@ package timberjack
 
 import (
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -203,4 +204,20 @@ func (fs *fakeFS) Stat(name string) (os.FileInfo, error) {
 	stat.Uid = 555
 	stat.Gid = 666
 	return info, nil
+}
+
+type badFileInfo struct{}
+
+func (badFileInfo) Name() string       { return "bad" }
+func (badFileInfo) Size() int64        { return 0 }
+func (badFileInfo) Mode() os.FileMode  { return 0644 }
+func (badFileInfo) ModTime() time.Time { return time.Now() }
+func (badFileInfo) IsDir() bool        { return false }
+func (badFileInfo) Sys() interface{}   { return nil }
+
+func TestChownInvalidSys(t *testing.T) {
+	err := chown("fake.log", badFileInfo{})
+	if err == nil || !strings.Contains(err.Error(), "failed to get syscall.Stat_t") {
+		t.Fatalf("expected chown to fail on invalid Sys(), got: %v", err)
+	}
 }
