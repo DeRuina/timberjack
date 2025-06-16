@@ -40,7 +40,8 @@ jobs:
       - name: Install goveralls
         run: go install github.com/mattn/goveralls@latest
 
-      - name: Send coverage
+      - name: Send coverage (only on push to main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           COVERALLS_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
         run: goveralls -coverprofile=covprofile -service=github
