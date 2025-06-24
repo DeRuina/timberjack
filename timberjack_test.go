@@ -80,8 +80,9 @@ func TestWriteTooLong(t *testing.T) {
 	dir := makeTempDir("TestWriteTooLong", t)
 	defer os.RemoveAll(dir)
 	l := &Logger{
-		Filename: logFile(dir),
-		MaxSize:  5,
+		Filename:         logFile(dir),
+		MaxSize:          5,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 	b := []byte("booooooooooooooo!")
@@ -101,7 +102,8 @@ func TestMakeLogDir(t *testing.T) {
 	defer os.RemoveAll(dir)
 	filename := logFile(dir)
 	l := &Logger{
-		Filename: filename,
+		Filename:         filename,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 	b := []byte("boo!")
@@ -117,7 +119,9 @@ func TestDefaultFilename(t *testing.T) {
 	dir := os.TempDir()
 	filename := filepath.Join(dir, filepath.Base(os.Args[0])+"-timberjack.log")
 	defer os.Remove(filename)
-	l := &Logger{}
+	l := &Logger{
+		BackupTimeFormat: backupTimeFormat,
+	}
 	defer l.Close()
 	b := []byte("boo!")
 	n, err := l.Write(b)
@@ -136,8 +140,9 @@ func TestAutoRotate(t *testing.T) {
 
 	filename := logFile(dir)
 	l := &Logger{
-		Filename: filename,
-		MaxSize:  10,
+		Filename:         filename,
+		MaxSize:          10,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 	b := []byte("boo!")
@@ -173,8 +178,9 @@ func TestFirstWriteRotate(t *testing.T) {
 
 	filename := logFile(dir)
 	l := &Logger{
-		Filename: filename,
-		MaxSize:  10,
+		Filename:         filename,
+		MaxSize:          10,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 
@@ -204,9 +210,10 @@ func TestMaxBackups(t *testing.T) {
 
 	filename := logFile(dir)
 	l := &Logger{
-		Filename:   filename,
-		MaxSize:    10,
-		MaxBackups: 1,
+		Filename:         filename,
+		MaxSize:          10,
+		MaxBackups:       1,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 	b := []byte("boo!")
@@ -356,9 +363,10 @@ func TestCleanupExistingBackups(t *testing.T) {
 	isNil(err, t)
 
 	l := &Logger{
-		Filename:   filename,
-		MaxSize:    10,
-		MaxBackups: 1,
+		Filename:         filename,
+		MaxSize:          10,
+		MaxBackups:       1,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 
@@ -386,9 +394,10 @@ func TestMaxAge(t *testing.T) {
 
 	filename := logFile(dir)
 	l := &Logger{
-		Filename: filename,
-		MaxSize:  10,
-		MaxAge:   1,
+		Filename:         filename,
+		MaxSize:          10,
+		MaxAge:           1,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 	b := []byte("boo!")
@@ -485,7 +494,10 @@ func TestOldLogFiles(t *testing.T) {
 }
 
 func TestTimeFromName(t *testing.T) {
-	l := &Logger{Filename: "/var/log/myfoo/foo.log"}
+	l := &Logger{
+		Filename:         "/var/log/myfoo/foo.log",
+		BackupTimeFormat: backupTimeFormat,
+	}
 	prefix, ext := l.prefixAndExt()
 
 	tests := []struct {
@@ -514,9 +526,10 @@ func TestLocalTime(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	l := &Logger{
-		Filename:  logFile(dir),
-		MaxSize:   10,
-		LocalTime: true,
+		Filename:         logFile(dir),
+		MaxSize:          10,
+		LocalTime:        true,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 	b := []byte("boo!")
@@ -541,9 +554,10 @@ func TestRotate(t *testing.T) {
 	filename := logFile(dir)
 
 	l := &Logger{
-		Filename:   filename,
-		MaxBackups: 1,
-		MaxSize:    100, // megabytes
+		Filename:         filename,
+		MaxBackups:       1,
+		MaxSize:          100, // megabytes
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 	b := []byte("boo!")
@@ -599,9 +613,10 @@ func TestCompressOnRotate(t *testing.T) {
 
 	filename := logFile(dir)
 	l := &Logger{
-		Compress: true,
-		Filename: filename,
-		MaxSize:  10,
+		Compress:         true,
+		Filename:         filename,
+		MaxSize:          10,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 	b := []byte("boo!")
@@ -648,9 +663,10 @@ func TestCompressOnResume(t *testing.T) {
 
 	filename := logFile(dir)
 	l := &Logger{
-		Compress: true,
-		Filename: filename,
-		MaxSize:  10,
+		Compress:         true,
+		Filename:         filename,
+		MaxSize:          10,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 
@@ -699,7 +715,9 @@ func TestJson(t *testing.T) {
 	"compress": true
 }`[1:])
 
-	l := Logger{}
+	l := Logger{
+		BackupTimeFormat: backupTimeFormat,
+	}
 	err := json.Unmarshal(data, &l)
 	isNil(err, t)
 	equals("foo", l.Filename, t)
@@ -775,6 +793,7 @@ func TestTimeBasedRotation(t *testing.T) {
 		Filename:         filename,
 		MaxSize:          10000,           // disable size rotation
 		RotationInterval: time.Second * 1, // short interval
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 
@@ -816,26 +835,48 @@ func TestTimeBasedRotation(t *testing.T) {
 }
 
 func TestSuffixTimeFormat(t *testing.T) {
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "invalid.log")
+
+	logger := &Logger{
+		Filename:         logFile,
+		BackupTimeFormat: backupTimeFormat,
+	}
 	// parses correctly with err == nil, but parsed time.Time won't match the supplied time.Time
+
 	invalidFormat := "2006-15-05 23:20:53"
-	isValid := isValidSuffixTimeFormat(invalidFormat)
-	if isValid {
+	logger.BackupTimeFormat = invalidFormat
+	err := logger.ValidateBackupTimeFormat()
+	if err == nil {
 		t.Fatalf("invalid timestamp layout determined as valid")
 	}
+
 	validFormat := `2006-01-02-15-05-44.000`
-	isValid = isValidSuffixTimeFormat(validFormat)
-	if !isValid {
+	logger.BackupTimeFormat = validFormat
+	err = logger.ValidateBackupTimeFormat()
+	if err != nil {
 		t.Errorf("valid timestamp layout determined as invalid")
 	}
+
 	validFormat2 := `2006-01-02-15-05-44.00000` // precision upto 5 digits after .
-	isValid = isValidSuffixTimeFormat(validFormat2)
-	if !isValid {
+	logger.BackupTimeFormat = validFormat2
+	err = logger.ValidateBackupTimeFormat()
+	if err != nil {
 		t.Errorf("valid timestamp2 layout determined as invalid")
 	}
+
 	validFormat3 := `2006-01-02-15-05-44.0000000` // precision upto 7 digits after .
-	isValid = isValidSuffixTimeFormat(validFormat3)
-	if !isValid {
+	logger.BackupTimeFormat = validFormat3
+	err = logger.ValidateBackupTimeFormat()
+	if err != nil {
 		t.Errorf("valid timestamp2 layout determined as invalid")
+	}
+
+	validFormat4 := `20060102-15-05` // precision upto 7 digits after .
+	logger.BackupTimeFormat = validFormat4
+	err = logger.ValidateBackupTimeFormat()
+	if err == nil {
+		t.Errorf("timestamp4 is invalid but determined as valid")
 	}
 }
 
@@ -917,10 +958,11 @@ func TestSizeBasedRotation(t *testing.T) {
 
 	filename := logFile(dir) // e.g., /tmp/.../foobar.log
 	l := &Logger{
-		Filename:   filename,
-		MaxSize:    10, // Max size of 10 bytes
-		MaxBackups: 1,
-		LocalTime:  false, // To match backupFileWithReason which uses UTC
+		Filename:         filename,
+		MaxSize:          10, // Max size of 10 bytes
+		MaxBackups:       1,
+		LocalTime:        false, // To match backupFileWithReason which uses UTC
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 
@@ -977,10 +1019,11 @@ func TestRotateAtMinutes(t *testing.T) {
 	filename := logFile(dir)
 
 	l := &Logger{
-		Filename:        filename,
-		RotateAtMinutes: marks,
-		MaxSize:         1000,  // disable size-based rotation
-		LocalTime:       false, // use UTC for backup timestamps
+		Filename:         filename,
+		RotateAtMinutes:  marks,
+		MaxSize:          1000,  // disable size-based rotation
+		LocalTime:        false, // use UTC for backup timestamps
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close() // stop scheduling goroutine
 
@@ -1080,8 +1123,9 @@ func TestOpenExistingOrNew_Fallback(t *testing.T) {
 	path := filepath.Join(tmpDir, "readonly.log")
 
 	logger := &Logger{
-		Filename: path,
-		MaxSize:  1,
+		Filename:         path,
+		MaxSize:          1,
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	// Create a file with 0 perms so append will fail
@@ -1104,10 +1148,11 @@ func TestMillRunOnce_OldFilesRemoved(t *testing.T) {
 	_ = os.WriteFile(oldLog, []byte("data"), 0644)
 
 	logger := &Logger{
-		Filename:   filepath.Join(dir, "test.log"),
-		MaxAge:     1,
-		Compress:   false,
-		MaxBackups: 0,
+		Filename:         filepath.Join(dir, "test.log"),
+		MaxAge:           1,
+		Compress:         false,
+		MaxBackups:       0,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	currentTime = func() time.Time {
 		return time.Now().AddDate(0, 0, 10)
@@ -1123,7 +1168,10 @@ func TestMillRunOnce_OldFilesRemoved(t *testing.T) {
 }
 
 func TestTimeFromName_InvalidFormat(t *testing.T) {
-	logger := &Logger{Filename: "foo.log"}
+	logger := &Logger{
+		Filename:         "foo.log",
+		BackupTimeFormat: backupTimeFormat,
+	}
 	prefix, ext := logger.prefixAndExt()
 
 	// Case 1: mismatched prefix
@@ -1165,6 +1213,7 @@ func TestBackupName(t *testing.T) {
 func TestShouldTimeRotate_WhenZero(t *testing.T) {
 	l := &Logger{
 		RotationInterval: time.Second,
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	currentTime = func() time.Time {
@@ -1183,6 +1232,7 @@ func TestShouldTimeRotate_WhenElapsed(t *testing.T) {
 	l := &Logger{
 		RotationInterval: time.Minute,
 		lastRotationTime: time.Date(2025, 1, 1, 11, 58, 0, 0, time.UTC),
+		BackupTimeFormat: backupTimeFormat,
 	}
 	if !l.shouldTimeRotate() {
 		t.Error("expected rotation due to elapsed time")
@@ -1190,7 +1240,9 @@ func TestShouldTimeRotate_WhenElapsed(t *testing.T) {
 }
 
 func TestRunScheduledRotations_NoMarks(t *testing.T) {
-	l := &Logger{}
+	l := &Logger{
+		BackupTimeFormat: backupTimeFormat,
+	}
 	l.scheduledRotationWg.Add(1)
 
 	// processedRotateAtMinutes is empty — triggers early return
@@ -1213,7 +1265,8 @@ func TestRunScheduledRotations_NoMarks(t *testing.T) {
 func TestRotate_OpenNewFails(t *testing.T) {
 	badPath := "/bad/path/logfile.log"
 	l := &Logger{
-		Filename: badPath,
+		Filename:         badPath,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	// force an invalid path to trigger openNew failure
 	err := l.rotate("manual")
@@ -1230,6 +1283,7 @@ func TestRotate_TriggersTimeReason(t *testing.T) {
 		Filename:         filepath.Join(t.TempDir(), "time-reason.log"),
 		RotationInterval: time.Minute,
 		lastRotationTime: time.Date(2024, 5, 1, 11, 58, 0, 0, time.UTC),
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 
@@ -1257,6 +1311,7 @@ func TestRunScheduledRotations_NoFutureTime(t *testing.T) {
 		RotateAtMinutes:         []int{0},
 		scheduledRotationWg:     sync.WaitGroup{},
 		scheduledRotationQuitCh: make(chan struct{}),
+		BackupTimeFormat:        backupTimeFormat,
 	}
 	logger.processedRotateAtMinutes = []int{0}
 
@@ -1273,7 +1328,8 @@ func TestRunScheduledRotations_NoFutureTime(t *testing.T) {
 
 func TestEnsureScheduledRotationLoopRunning_InvalidMinutes(t *testing.T) {
 	l := &Logger{
-		RotateAtMinutes: []int{61, -1, 999}, // invalid minutes
+		RotateAtMinutes:  []int{61, -1, 999}, // invalid minutes
+		BackupTimeFormat: backupTimeFormat,
 	}
 	l.ensureScheduledRotationLoopRunning()
 
@@ -1321,7 +1377,10 @@ func TestOpenNew_RenameFails(t *testing.T) {
 	}
 	defer func() { osRename = originalRename }()
 
-	l := &Logger{Filename: file}
+	l := &Logger{
+		Filename:         file,
+		BackupTimeFormat: backupTimeFormat,
+	}
 	err := l.openNew("size")
 
 	if err == nil || !strings.Contains(err.Error(), "can't rename") {
@@ -1355,7 +1414,8 @@ func TestRotate_CloseFileFails(t *testing.T) {
 	_ = f.Close() // Close early to simulate Close() failure
 
 	l := &Logger{
-		file: f,
+		file:             f,
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	err = l.Rotate()
@@ -1365,7 +1425,10 @@ func TestRotate_CloseFileFails(t *testing.T) {
 }
 
 func TestOpenNew_StatUnexpectedError(t *testing.T) {
-	logger := &Logger{Filename: filepath.Join(t.TempDir(), "logfile.log")}
+	logger := &Logger{
+		Filename:         filepath.Join(t.TempDir(), "logfile.log"),
+		BackupTimeFormat: backupTimeFormat,
+	}
 
 	originalOsStat := osStat
 	osStat = func(name string) (os.FileInfo, error) {
@@ -1412,7 +1475,10 @@ func TestOpenExistingOrNew_StatFailure(t *testing.T) {
 		return nil, fmt.Errorf("mock stat failure")
 	}
 
-	logger := &Logger{Filename: "somefile.log"}
+	logger := &Logger{
+		Filename:         "somefile.log",
+		BackupTimeFormat: backupTimeFormat,
+	}
 	logger.millCh = make(chan bool, 1) // prevent nil panic
 	err := logger.openExistingOrNew(10)
 	if err == nil || !strings.Contains(err.Error(), "error getting log file info") {
@@ -1433,7 +1499,10 @@ func TestOpenNew_OpenFileFails(t *testing.T) {
 	// Attempt to use that file as a directory
 	badPath := filepath.Join(fileAsDir, "should_fail.log")
 
-	logger := &Logger{Filename: badPath}
+	logger := &Logger{
+		Filename:         badPath,
+		BackupTimeFormat: backupTimeFormat,
+	}
 	err = logger.openNew("size")
 
 	if err == nil || !strings.Contains(err.Error(), "can't make directories") {
@@ -1454,6 +1523,7 @@ func TestRunScheduledRotations_NoFutureSlot(t *testing.T) {
 		Filename:                "invalid.log",
 		RotateAtMinutes:         []int{0},
 		scheduledRotationQuitCh: make(chan struct{}),
+		BackupTimeFormat:        backupTimeFormat,
 	}
 	logger.processedRotateAtMinutes = []int{0}
 	logger.scheduledRotationWg.Add(1)
@@ -1466,7 +1536,10 @@ func TestRunScheduledRotations_NoFutureSlot(t *testing.T) {
 }
 
 func TestTimeFromName_MalformedFilename(t *testing.T) {
-	logger := &Logger{Filename: "foo.log"}
+	logger := &Logger{
+		Filename:         "foo.log",
+		BackupTimeFormat: backupTimeFormat,
+	}
 	prefix, ext := logger.prefixAndExt()
 
 	// Missing final hyphen separator, so no reason part
@@ -1488,8 +1561,9 @@ func TestWrite_OpenExistingFails(t *testing.T) {
 	}
 
 	logger := &Logger{
-		Filename: filepath.Join(t.TempDir(), "badfile.log"),
-		MaxSize:  10,
+		Filename:         filepath.Join(t.TempDir(), "badfile.log"),
+		MaxSize:          10,
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	// prevent nil panic
@@ -1526,6 +1600,7 @@ func TestWrite_IntervalRotateFails(t *testing.T) {
 		Filename:         logfile,
 		RotationInterval: time.Second,
 		lastRotationTime: time.Date(2025, 1, 1, 11, 59, 0, 0, time.UTC),
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 
@@ -1559,8 +1634,9 @@ func TestWrite_SizeRotateFails(t *testing.T) {
 	}
 
 	l := &Logger{
-		Filename: logfile,
-		MaxSize:  10, // force rotation at 10 bytes
+		Filename:         logfile,
+		MaxSize:          10, // force rotation at 10 bytes
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 
@@ -1744,7 +1820,8 @@ func TestCompressLogFile_RemoveFails(t *testing.T) {
 
 func TestEnsureScheduledRotationLoopRunning_Empty(t *testing.T) {
 	l := &Logger{
-		RotateAtMinutes: nil, // empty case
+		RotateAtMinutes:  nil, // empty case
+		BackupTimeFormat: backupTimeFormat,
 	}
 	l.ensureScheduledRotationLoopRunning()
 
@@ -1755,7 +1832,8 @@ func TestEnsureScheduledRotationLoopRunning_Empty(t *testing.T) {
 
 func TestEnsureScheduledRotationLoopRunning_InvalidMinutes_1(t *testing.T) {
 	l := &Logger{
-		RotateAtMinutes: []int{-5, 60, 999, -1}, // all invalid
+		RotateAtMinutes:  []int{-5, 60, 999, -1}, // all invalid
+		BackupTimeFormat: backupTimeFormat,
 	}
 	l.ensureScheduledRotationLoopRunning()
 
@@ -1782,6 +1860,7 @@ func TestRunScheduledRotations_NoFutureSlotFallback(t *testing.T) {
 		Filename:                "test-fallback.log",
 		RotateAtMinutes:         []int{0},
 		scheduledRotationQuitCh: make(chan struct{}),
+		BackupTimeFormat:        backupTimeFormat,
 	}
 	logger.processedRotateAtMinutes = []int{0}
 
@@ -1799,6 +1878,7 @@ func TestLoggerClose_AlreadyClosedChannel(t *testing.T) {
 	logger := &Logger{
 		Filename:                "test-double-close.log",
 		scheduledRotationQuitCh: make(chan struct{}),
+		BackupTimeFormat:        backupTimeFormat,
 	}
 
 	// Close the quit channel manually
@@ -1813,10 +1893,11 @@ func TestLoggerClose_AlreadyClosedChannel(t *testing.T) {
 
 func TestMillRunOnce_NoOp(t *testing.T) {
 	logger := &Logger{
-		MaxBackups: 0,
-		MaxAge:     0,
-		Compress:   false,
-		Filename:   filepath.Join(t.TempDir(), "noop.log"),
+		MaxBackups:       0,
+		MaxAge:           0,
+		Compress:         false,
+		Filename:         filepath.Join(t.TempDir(), "noop.log"),
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	// Should do nothing and return nil
@@ -1830,6 +1911,7 @@ func TestShouldTimeRotate_ZeroLastRotationTime(t *testing.T) {
 	logger := &Logger{
 		RotationInterval: time.Minute,
 		lastRotationTime: time.Time{}, // zero time
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	if logger.shouldTimeRotate() {
@@ -1840,9 +1922,10 @@ func TestShouldTimeRotate_ZeroLastRotationTime(t *testing.T) {
 func TestMillRunOnce_CompressEligible(t *testing.T) {
 	tmp := t.TempDir()
 	logger := &Logger{
-		Filename:   filepath.Join(tmp, "test.log"),
-		Compress:   true,
-		MaxBackups: 1,
+		Filename:         filepath.Join(tmp, "test.log"),
+		Compress:         true,
+		MaxBackups:       1,
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	// Create a non-compressed log file with a valid timestamp in name
@@ -1872,9 +1955,10 @@ func TestMillRunOnce_ExpiredFileSkipped(t *testing.T) {
 	base := filepath.Join(tmp, "logfile.log")
 
 	logger := &Logger{
-		Filename: base,
-		MaxAge:   1,    // 1 day
-		Compress: true, // trigger compression logic
+		Filename:         base,
+		MaxAge:           1,    // 1 day
+		Compress:         true, // trigger compression logic
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	// Manually choose a timestamp > 1 day old
@@ -1907,9 +1991,10 @@ func TestMillRun_TriggersMillRunOnce_Effect(t *testing.T) {
 	}
 
 	l := &Logger{
-		Filename: logFile,
-		Compress: true,
-		millCh:   make(chan bool),
+		Filename:         logFile,
+		Compress:         true,
+		millCh:           make(chan bool),
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	// Start millRun in background
@@ -1937,10 +2022,11 @@ func TestRotate_StartMillOnlyOnce_Observable(t *testing.T) {
 	tmp := t.TempDir()
 	base := filepath.Join(tmp, "logfile.log")
 	logger := &Logger{
-		Filename: base,
-		MaxSize:  1,
-		Compress: true,
-		millCh:   make(chan bool, 10), // Buffered so we can trigger multiple
+		Filename:         base,
+		MaxSize:          1,
+		Compress:         true,
+		millCh:           make(chan bool, 10), // Buffered so we can trigger multiple
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	// Create two valid backup files to be compressed
@@ -1985,8 +2071,9 @@ func TestScheduledMinuteRotationFails(t *testing.T) {
 	file := filepath.Join(tmp, "fail.log")
 
 	logger := &Logger{
-		Filename:        file,
-		RotateAtMinutes: []int{0},
+		Filename:         file,
+		RotateAtMinutes:  []int{0},
+		BackupTimeFormat: backupTimeFormat,
 	}
 	logger.processedRotateAtMinutes = []int{0}
 	logger.scheduledRotationQuitCh = make(chan struct{})
@@ -2015,6 +2102,7 @@ func TestRunScheduledRotations_CannotFindNextSlot(t *testing.T) {
 		Filename:                "test.log",
 		RotateAtMinutes:         []int{0},
 		scheduledRotationQuitCh: make(chan struct{}),
+		BackupTimeFormat:        backupTimeFormat,
 	}
 	logger.processedRotateAtMinutes = []int{0}
 	logger.scheduledRotationWg.Add(1)
@@ -2052,8 +2140,9 @@ func TestRunScheduledRotations_NoFutureSlotFound(t *testing.T) {
 	}
 
 	logger := &Logger{
-		Filename:        "mock.log",
-		RotateAtMinutes: []int{0},
+		Filename:         "mock.log",
+		RotateAtMinutes:  []int{0},
+		BackupTimeFormat: backupTimeFormat,
 	}
 	logger.processedRotateAtMinutes = []int{0}
 	logger.scheduledRotationQuitCh = make(chan struct{})
@@ -2077,8 +2166,9 @@ func TestScheduledRotation_TimerFiresAndRotates(t *testing.T) {
 	file := filepath.Join(tmpDir, "timerfire.log")
 
 	logger := &Logger{
-		Filename:        file,
-		RotateAtMinutes: []int{1}, // Next minute after 'now'
+		Filename:         file,
+		RotateAtMinutes:  []int{1}, // Next minute after 'now'
+		BackupTimeFormat: backupTimeFormat,
 	}
 	logger.processedRotateAtMinutes = []int{1}
 	logger.scheduledRotationQuitCh = make(chan struct{})
@@ -2104,9 +2194,10 @@ func TestMillRunOnce_RemoveFails(t *testing.T) {
 	defer func() { osRemove = origRemove }()
 
 	logger := &Logger{
-		Filename:   filepath.Join(tmp, "dummy.log"),
-		MaxBackups: 1,
-		Compress:   false,
+		Filename:         filepath.Join(tmp, "dummy.log"),
+		MaxBackups:       1,
+		Compress:         false,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	err := logger.millRunOnce()
 	if err != nil {
@@ -2147,6 +2238,7 @@ func TestRunScheduledRotations_FallbackRetry(t *testing.T) {
 		RotateAtMinutes:          []int{0},
 		processedRotateAtMinutes: []int{0},
 		scheduledRotationQuitCh:  make(chan struct{}),
+		BackupTimeFormat:         backupTimeFormat,
 	}
 
 	logger.scheduledRotationWg.Add(1)
@@ -2166,6 +2258,7 @@ func TestRunScheduledRotations_TimerFires(t *testing.T) {
 		RotateAtMinutes:          []int{1},
 		processedRotateAtMinutes: []int{1},
 		scheduledRotationQuitCh:  make(chan struct{}),
+		BackupTimeFormat:         backupTimeFormat,
 	}
 
 	logger.lastRotationTime = time.Now().Add(-time.Hour)
@@ -2198,8 +2291,9 @@ func TestWrite_SizeRotateFails_4(t *testing.T) {
 	logPath := filepath.Join(tmp, "fail-size.log")
 
 	logger := &Logger{
-		Filename: logPath,
-		MaxSize:  1, // 1 MB
+		Filename:         logPath,
+		MaxSize:          1, // 1 MB
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	// Write almost max-size file manually
@@ -2245,6 +2339,7 @@ func TestWrite_IntervalRotationFails(t *testing.T) {
 		Filename:         logfile,
 		RotationInterval: time.Minute,
 		lastRotationTime: currentTime().Add(-2 * time.Minute),
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer logger.Close()
 
@@ -2270,6 +2365,7 @@ func TestRunScheduledRotations_NoFutureSlotRetry(t *testing.T) {
 		RotateAtMinutes:          []int{0}, // only candidate is "00"
 		processedRotateAtMinutes: []int{0},
 		scheduledRotationQuitCh:  make(chan struct{}),
+		BackupTimeFormat:         backupTimeFormat,
 	}
 
 	logger.scheduledRotationWg.Add(1)
@@ -2292,6 +2388,7 @@ func TestRunScheduledRotations_RotateFails(t *testing.T) {
 		RotateAtMinutes:          []int{0},
 		processedRotateAtMinutes: []int{0},
 		scheduledRotationQuitCh:  make(chan struct{}),
+		BackupTimeFormat:         backupTimeFormat,
 	}
 
 	logger.scheduledRotationWg.Add(1)
@@ -2321,6 +2418,7 @@ func TestRotate_ManualTriggersTimeRotation(t *testing.T) {
 		Filename:         filename,
 		RotationInterval: time.Minute,
 		lastRotationTime: time.Date(2025, 6, 5, 11, 58, 0, 0, time.UTC),
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer l.Close()
 
@@ -2381,6 +2479,7 @@ func TestRunScheduledRotations_FallbackOnRotateFailure(t *testing.T) {
 		RotateAtMinutes:          []int{0},
 		processedRotateAtMinutes: []int{0},
 		scheduledRotationQuitCh:  make(chan struct{}),
+		BackupTimeFormat:         backupTimeFormat,
 	}
 	logger.scheduledRotationWg.Add(1)
 
@@ -2394,8 +2493,9 @@ func TestRunScheduledRotations_FallbackOnRotateFailure(t *testing.T) {
 
 func TestLoggerClose_ClosesMillChannel(t *testing.T) {
 	logger := &Logger{
-		Filename: "test-close-mill.log",
-		millCh:   make(chan bool, 1),
+		Filename:         "test-close-mill.log",
+		millCh:           make(chan bool, 1),
+		BackupTimeFormat: backupTimeFormat,
 	}
 
 	// Set startMill to run millRun (to simulate actual usage)
@@ -2433,7 +2533,8 @@ func TestOpenNew_SetsLogStartTimeWhenFileMissing(t *testing.T) {
 	logfile := filepath.Join(dir, "missing.log")
 
 	logger := &Logger{
-		Filename: logfile,
+		Filename:         logfile,
+		BackupTimeFormat: backupTimeFormat,
 	}
 	defer logger.Close()
 

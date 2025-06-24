@@ -107,14 +107,19 @@ type Logger struct {
 	// Example: RotationInterval = time.Hour * 24 will rotate logs daily.
 	RotationInterval time.Duration `json:"rotationinterval" yaml:"rotationinterval"`
 
-	// RotationFileSuffixTimeFormat specifies the layout used to format the timestamp
-	// appended to rotated file names. If not set, the default format
-	// "2006-01-02T15-04-05.000" will be used.
+	// BackupTimeFormat defines the layout for the timestamp appended to rotated file names.
+	// While other formats are allowed, it is recommended to follow the standard Go time layout
+	// (https://pkg.go.dev/time#pkg-constants). Use the ValidateBackupTimeFormat() method to check
+	// if the value is valid. It is recommended to call this method before using the Logger instance.
 	//
-	// Example: RotationFileSuffixTimeFormat = `2006-01-02-15-04-05` will generate rotated
-	// backup files as <logfilename>-2006-01-02-15-04-05-<rotationCriteron>-timberjack.log.
-	// Here, rotationCriterion could be `time` or `size`.
-	RotationFileSuffixTimeFormat string `json:"rotationfilesuffixtimeformat" yaml:"rotationfilesuffixtimeformat"`
+	// WARNING: This field is assumed to be constant after initialization.
+	//
+	// Example:
+	// BackupTimeFormat = `2006-01-02-15-04-05`
+	// will generate rotated backup files in the format:
+	// <logfilename>-2006-01-02-15-04-05-<rotationCriterion>-timberjack.log
+	// where `rotationCriterion` could be `time` or `size`.
+	BackupTimeFormat string `json:"backuptimeformat" yaml:"backuptimeformat"`
 
 	// RotateAtMinutes defines specific minutes within an hour (0-59) to trigger a rotation.
 	// For example, []int{0} for top of the hour, []int{0, 30} for top and half-past the hour.
@@ -141,7 +146,9 @@ type Logger struct {
 	scheduledRotationWg        sync.WaitGroup // waits for the scheduled rotation goroutine to finish
 	processedRotateAtMinutes   []int          // internal storage for sorted and validated RotateAtMinutes
 
-	isSuffixTimeFormatValidated bool // this flag helps prevent repeated validation checks on supplied layout
+	// isBackupTimeFormatValidated flag helps prevent repeated validation checks
+	// on supplied format through configuration
+	isBackupTimeFormatValidated bool
 }
 
 var (
@@ -232,6 +239,37 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 	n, err = l.file.Write(p)
 	l.size += int64(n)
 	return n, err
+}
+
+// ValidateBackupTimeFormat checks if the configured BackupTimeFormat is a valid time layout.
+// While other formats are allowed, it is recommended to follow the standard time layout
+// rules as defined here: https://pkg.go.dev/time#pkg-constants
+//
+// WARNING: Assumes that BackupTimeFormat value remains constant after initialization.
+func (l *Logger) ValidateBackupTimeFormat() error {
+	if len(l.BackupTimeFormat) == 0 {
+		return errors.New("BackupTimeFormat cannot be empty")
+	}
+	// 2025-05-22 23:41:59.987654321 +0000 UTC
+	now := time.Date(2025, 05, 22, 23, 41, 59, 987_654_321, time.UTC)
+
+	layoutPrecision := countDigitsAfterDot(l.BackupTimeFormat)
+
+	now, err := truncateFractional(now, layoutPrecision)
+
+	if err != nil {
+		return err
+	}
+	formatted := now.Format(l.BackupTimeFormat)
+	parsedT, err := time.Parse(l.BackupTimeFormat, formatted)
+	if err != nil {
+		return fmt.Errorf("invalid BackupTimeFormat: %w", err)
+	}
+	if !parsedT.Equal(now) {
+		return errors.New("invalid BackupTimeFormat: time.Time parsed from the format does not match the time.Time supplied")
+	}
+
+	return nil
 }
 
 // location returns the time.Location (UTC or Local) to use for timestamps in backup filenames.
@@ -444,23 +482,6 @@ func (l *Logger) rotate(reason string) error {
 	return nil
 }
 
-// getRotationFileSuffixTimeFormat returns format of timestamp that is used as suffix
-// of the rotated file.
-// If RotationFileSuffixTimeFormat field is not set during Logger creation, then
-// default value of `2006-01-02T15-04-05.000`
-func (l *Logger) getRotationFileSuffixTimeFormat() string {
-	if !l.isSuffixTimeFormatValidated {
-		if isValidSuffixTimeFormat(l.RotationFileSuffixTimeFormat) {
-			l.isSuffixTimeFormatValidated = true
-			return l.RotationFileSuffixTimeFormat
-		}
-		// supplied time format is invalid. So replacing it with backup format
-		l.isSuffixTimeFormatValidated = true
-		l.RotationFileSuffixTimeFormat = backupTimeFormat
-	}
-	return l.RotationFileSuffixTimeFormat
-}
-
 // openNew creates a new log file for writing.
 // If an old log file already exists, it is moved aside by renaming it with a timestamp.
 // This method assumes that l.mu is held and the old file (if any) has already been closed.
@@ -481,8 +502,16 @@ func (l *Logger) openNew(reasonForBackup string) error {
 		finalMode = oldInfo.Mode()
 
 		rotationTimeForBackup := currentTime()
-		rotationSuffixTimeFormat := l.getRotationFileSuffixTimeFormat()
-		newname := backupName(name, l.LocalTime, reasonForBackup, rotationTimeForBackup, rotationSuffixTimeFormat)
+
+		if !l.isBackupTimeFormatValidated {
+			validationErr := l.ValidateBackupTimeFormat()
+			if validationErr != nil {
+				return validationErr
+			}
+			l.isBackupTimeFormatValidated = true
+		}
+
+		newname := backupName(name, l.LocalTime, reasonForBackup, rotationTimeForBackup, l.BackupTimeFormat)
 		if errRename := osRename(name, newname); errRename != nil {
 			return fmt.Errorf("can't rename log file: %s", errRename)
 		}
@@ -821,15 +850,15 @@ func (l *Logger) prefixAndExt() (prefix, ext string) {
 	return prefix, ext
 }
 
-// isValidSuffixTimeFormat determines the validity of the `layout` as a format for time.Time.
+// isValidTimeFormat determines the validity of the `layout` as a format for time.Time.
 // Counts the number of digits after `.` in the layout format and compares till that precision.
 //
 // Internally, it generates a time.Time value with required precision.
 // This generated time.Time value is used to format time in the given `layout`.
 // Using the formatted string, we construct a time.Time value to compare with original time.Time
-func isValidSuffixTimeFormat(layout string) bool {
-	if layout == "" {
-		return false
+func isValidTimeFormat(layout string) error {
+	if len(layout) == 0 {
+		return errors.New("timeformat cannot be empty")
 	}
 	// 2025-05-22 23:41:59.987654321 +0000 UTC
 	now := time.Date(2025, 05, 22, 23, 41, 59, 987_654_321, time.UTC)
@@ -839,11 +868,17 @@ func isValidSuffixTimeFormat(layout string) bool {
 	now, err := truncateFractional(now, layoutPrecision)
 
 	if err != nil {
-		return false
+		return err
 	}
 	formatted := now.Format(layout)
 	parsedT, err := time.Parse(layout, formatted)
-	return parsedT.Equal(now) && err == nil
+	if err != nil {
+		return err
+	}
+	if !parsedT.Equal(now) {
+		return errors.New("timeformat is invalid")
+	}
+	return nil
 }
 
 // countDigitsAfterDot returns the number of consecutive digit characters
