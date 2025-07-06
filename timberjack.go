@@ -113,6 +113,7 @@ type Logger struct {
 	// if the value is valid. It is recommended to call this method before using the Logger instance.
 	//
 	// WARNING: This field is assumed to be constant after initialization.
+	// WARNING: If invalid value is supplied then default format `2006-01-02T15-04-05.000` will be used.
 	//
 	// Example:
 	// BackupTimeFormat = `2006-01-02-15-04-05`
@@ -166,6 +167,9 @@ var (
 	osRename = os.Rename
 
 	osRemove = os.Remove
+
+	// empty BackupTimeFormatField
+	ErrEmptyBackupTimeFormatField = errors.New("empty backupformat field")
 )
 
 // Write implements io.Writer.
@@ -248,7 +252,7 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 // WARNING: Assumes that BackupTimeFormat value remains constant after initialization.
 func (l *Logger) ValidateBackupTimeFormat() error {
 	if len(l.BackupTimeFormat) == 0 {
-		return errors.New("BackupTimeFormat cannot be empty")
+		return ErrEmptyBackupTimeFormatField
 	}
 	// 2025-05-22 23:41:59.987654321 +0000 UTC
 	now := time.Date(2025, 05, 22, 23, 41, 59, 987_654_321, time.UTC)
@@ -504,10 +508,16 @@ func (l *Logger) openNew(reasonForBackup string) error {
 		rotationTimeForBackup := currentTime()
 
 		if !l.isBackupTimeFormatValidated {
+			// a backup format has been supplied.
 			validationErr := l.ValidateBackupTimeFormat()
 			if validationErr != nil {
-				return validationErr
+				// some validation issue.
+				// backup format is empty or invalid.
+				// use backupformat constant
+				l.BackupTimeFormat = backupTimeFormat
 			}
+			// mark the backup format as validated if there was no error.
+			// this would prevent validation checks in every rotation
 			l.isBackupTimeFormatValidated = true
 		}
 

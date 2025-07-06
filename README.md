@@ -49,6 +49,7 @@ func main() {
 		LocalTime:  true,           // default: false (use UTC)
 		RotationInterval: time.Hour * 24, // Rotate daily if no other rotation met
 		RotateAtMinutes: []int{0, 15, 30, 45}, // Also rotate at HH:00, HH:15, HH:30, HH:45
+    BackupTimeFormat: "2006-01-02-15-04-05" // Rotated files will have format <logfilename>-2006-01-02-15-04-05-<rotationCriterion>-timberjack.log
 	}
 	log.SetOutput(logger)
 	defer logger.Close() // Ensure logger is closed on application exit to stop goroutines
@@ -88,7 +89,7 @@ type Logger struct {
     Compress         bool          // Compress rotated logs (gzip)
     RotationInterval time.Duration // Rotate after this duration (if > 0)
     RotateAtMinutes []int          // Specific minutes within an hour (0-59) to trigger a rotation.
-    BackupTimeFormat string        // REQUIRED to generate filenames for rotated files
+    BackupTimeFormat string        // OPTIONAL with default value : 2006-01-02T15-04-05.000
 }
 ```
 
@@ -117,8 +118,8 @@ For example:
 ## ⚠️ Rotation Notes & Warnings
 
 * **`BackupTimeFormat` Values must be valid and should not change after initialization**  
-  The `BackupTimeFormat` value **cannot be empty** and must follow the timestamp layout rules
-  specified here: https://pkg.go.dev/time#pkg-constants. Using invalid values will result in errors.
+  The `BackupTimeFormat` value **must be valid** and must follow the timestamp layout rules
+  specified here: https://pkg.go.dev/time#pkg-constants. `BackupTimeFormat` supports more formats but it's recommended to use standard formats. If **invalid** value is configured, then the default time format is used : `2006-01-02T15-04-05.000`. 
 
 * **Silent Ignoring of Invalid `RotateAtMinutes` Values**  
   Values outside the valid range (`0–59`) or duplicates in `RotateAtMinutes` are silently ignored. No warnings or errors will be logged. This allows the program to continue safely, but the rotation behavior may not match your expectations if values are invalid.
