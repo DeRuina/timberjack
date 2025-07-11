@@ -860,37 +860,6 @@ func (l *Logger) prefixAndExt() (prefix, ext string) {
 	return prefix, ext
 }
 
-// isValidTimeFormat determines the validity of the `layout` as a format for time.Time.
-// Counts the number of digits after `.` in the layout format and compares till that precision.
-//
-// Internally, it generates a time.Time value with required precision.
-// This generated time.Time value is used to format time in the given `layout`.
-// Using the formatted string, we construct a time.Time value to compare with original time.Time
-func isValidTimeFormat(layout string) error {
-	if len(layout) == 0 {
-		return errors.New("timeformat cannot be empty")
-	}
-	// 2025-05-22 23:41:59.987654321 +0000 UTC
-	now := time.Date(2025, 05, 22, 23, 41, 59, 987_654_321, time.UTC)
-
-	layoutPrecision := countDigitsAfterDot(layout)
-
-	now, err := truncateFractional(now, layoutPrecision)
-
-	if err != nil {
-		return err
-	}
-	formatted := now.Format(layout)
-	parsedT, err := time.Parse(layout, formatted)
-	if err != nil {
-		return err
-	}
-	if !parsedT.Equal(now) {
-		return errors.New("timeformat is invalid")
-	}
-	return nil
-}
-
 // countDigitsAfterDot returns the number of consecutive digit characters
 // immediately following the first '.' in the input.
 // It skips all characters before the '.' and stops counting at the first non-digit
