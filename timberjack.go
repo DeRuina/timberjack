@@ -515,6 +515,7 @@ func (l *Logger) openNew(reasonForBackup string) error {
 				// backup format is empty or invalid.
 				// use backupformat constant
 				l.BackupTimeFormat = backupTimeFormat
+				fmt.Fprintf(os.Stderr, "timberjack: invalid BackupTimeFormat: %v — falling back to default format: %s\n", validationErr, backupTimeFormat)
 			}
 			// mark the backup format as validated if there was no error.
 			// this would prevent validation checks in every rotation
@@ -834,7 +835,12 @@ func (l *Logger) timeFromName(filename, prefix, ext string) (time.Time, error) {
 	if l.LocalTime {
 		currentLoc = time.Local
 	}
-	return time.ParseInLocation(backupTimeFormat, timestampPart, currentLoc)
+
+	layout := l.BackupTimeFormat
+	if layout == "" {
+		layout = backupTimeFormat
+	}
+	return time.ParseInLocation(layout, timestampPart, currentLoc)
 }
 
 // max returns the maximum size in bytes of log files before rolling.
