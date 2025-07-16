@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/DeRuina/timberjack/compare/v2.0.0...v2.0.1) (2025-07-16)
+
+
+### Bug Fixes
+
+* truncateFractional bug fix ([9a6f908](https://github.com/DeRuina/timberjack/commit/9a6f908d270ddfa45df66621b0b12b1ff44ab28f))
+
 ## [2.0.0](https://github.com/DeRuina/timberjack/compare/v1.3.0...v2.0.0) (2025-07-16)
 
 
