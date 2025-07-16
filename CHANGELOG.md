@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/DeRuina/timberjack/compare/v1.3.0...v2.0.0) (2025-07-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* `BackupTimeFormat` field is now required for Logger instance to work. Returns error if invalid value is passed.
+
+### Features
+
+* Rotation Suffix Time Format ([e2c2211](https://github.com/DeRuina/timberjack/commit/e2c22115ae301c034e07c703ab9729d25b170a49))
+
 ## [1.3.0](https://github.com/DeRuina/timberjack/compare/v1.2.0...v1.3.0) (2025-06-04)
 
 
