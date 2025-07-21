@@ -433,7 +433,7 @@ func (l *Logger) Close() error {
 		// Check if millCh is already closed before trying to close it again.
 		// A simple way is to use sync.Once for closing millCh as well, or just try-close.
 		// For now, assume single close call is handled.
-		// close(l.millCh) // This would stop the millRun goroutine if it ranges on millCh.
+		close(l.millCh) // This would stop the millRun goroutine if it ranges on millCh.
 		// A select with a default can also try to send a quit signal if millCh structure is different.
 	}
 
