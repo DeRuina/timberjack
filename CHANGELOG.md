@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/DeRuina/timberjack/compare/v1.3.1...v1.3.2) (2025-07-21)
+
+### Bug Fixes
+
+* millRun goroutine leak fix ([28bf784](https://github.com/DeRuina/timberjack/commit/28bf784b830e5f839054f7d82950087e323b958f))
+
+
 ## [1.3.1](https://github.com/DeRuina/timberjack/compare/v1.3.0...v1.3.1) (2025-07-17)
 
 

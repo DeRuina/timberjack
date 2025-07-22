@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/fortytw2/leaktest"
 )
 
 // !!!NOTE!!!
@@ -2482,4 +2484,31 @@ func TestTruncateFractional(t *testing.T) {
 			t.Errorf("truncateFractional(_, %d) modified time components", tt.n)
 		}
 	}
+}
+
+func TestMillGoroutineCleanup(t *testing.T) {
+	defer leaktest.Check(t)() // Will fail the test if goroutines leak
+
+	logger := &Logger{
+		Filename:         "test-mill.log",
+		MaxSize:          100, // Small enough to trigger rotation/mill logic
+		Compress:         true,
+		MaxBackups:       1,
+		BackupTimeFormat: "2006-01-02T15-04-05.000", // consistent with timberjack defaults
+	}
+
+	_, err := logger.Write([]byte("1234567890"))
+	if err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	// Give time for millRun to potentially start
+	time.Sleep(100 * time.Millisecond)
+
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger close failed: %v", err)
+	}
+
+	// Wait briefly to allow goroutine shutdown
+	time.Sleep(100 * time.Millisecond)
 }
