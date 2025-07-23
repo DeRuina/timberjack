@@ -2512,3 +2512,67 @@ func TestMillGoroutineCleanup(t *testing.T) {
 	// Wait briefly to allow goroutine shutdown
 	time.Sleep(100 * time.Millisecond)
 }
+
+// TestWriteToClosedLogger verifies that a write to a closed logger succeeds
+// by performing a single open-write-close cycle, and that the internal
+// file handle remains nil.
+func TestWriteToClosedLogger(t *testing.T) {
+	// 1. Setup
+	// Use t.TempDir() to create a temporary directory that is automatically cleaned up.
+	tempDir := t.TempDir()
+	filename := filepath.Join(tempDir, "test-write-closed.log")
+
+	logger := &Logger{
+		Filename: filename,
+	}
+	defer func() {
+		// Even though TempDir cleans up, explicitly closing again ensures
+		// that our test logic covers all cleanup paths.
+		// It's safe because Close() is idempotent.
+		logger.Close()
+	}()
+
+	initialContent := []byte("initial content\n")
+	writeAfterCloseContent := []byte("this was written after close\n")
+
+	// 2. Action: Initial write and close
+	n, err := logger.Write(initialContent)
+	if err != nil {
+		t.Fatalf("Initial write failed: %v", err)
+	}
+	if n != len(initialContent) {
+		t.Fatalf("Initial write: expected to write %d bytes, wrote %d", len(initialContent), n)
+	}
+
+	// Close the logger
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Failed to close logger: %v", err)
+	}
+
+	// 3. Action: Write to the now-closed logger
+	n, err = logger.Write(writeAfterCloseContent)
+
+	// 4. Verification
+	if err != nil {
+		t.Fatalf("Write after close should not return an error, but got: %v", err)
+	}
+	if n != len(writeAfterCloseContent) {
+		t.Fatalf("Write after close: expected to write %d bytes, wrote %d", len(writeAfterCloseContent), n)
+	}
+
+	// Verify the internal file handle is still nil
+	if logger.file != nil {
+		t.Fatal("logger.file should be nil after writing to a closed logger")
+	}
+
+	// Verify the complete file content
+	fileContent, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	expectedContent := bytes.Join([][]byte{initialContent, writeAfterCloseContent}, nil)
+	if !bytes.Equal(fileContent, expectedContent) {
+		t.Errorf("File content mismatch.\nExpected: %q\nGot:      %q", expectedContent, fileContent)
+	}
+}

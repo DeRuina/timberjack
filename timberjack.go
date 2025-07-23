@@ -32,8 +32,6 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
-
-	"github.com/djherbis/atime"
 )
 
 const (
@@ -44,6 +42,18 @@ const (
 
 // ensure we always implement io.WriteCloser
 var _ io.WriteCloser = (*Logger)(nil)
+
+// SafeClose is a generic function that safely closes a channel of any type.
+// It prevents "panic: close of closed channel" and "panic: close of nil channel".
+//
+// The type parameter [T any] allows this function to work with channels of any element type,
+// for example, chan int, chan string, chan struct{}, etc.
+func safeClose[T any](ch chan T) {
+	defer func() {
+		recover()
+	}()
+	close(ch)
+}
 
 // Logger is an io.WriteCloser that writes to the specified filename.
 //
@@ -441,13 +451,15 @@ func (l *Logger) Close() error {
 
 	// Stop and wait for the scheduled rotation goroutine
 	if l.scheduledRotationQuitCh != nil {
-		close(l.scheduledRotationQuitCh)
+		safeClose(l.scheduledRotationQuitCh)
 		l.scheduledRotationWg.Wait() // Wait for the goroutine to finish
+		l.scheduledRotationQuitCh = nil
 	}
 
 	// Stop the mill goroutine. Original timberjack closes millCh.
 	if l.millCh != nil {
-		close(l.millCh)
+		safeClose(l.millCh)
+		l.millCh = nil
 	}
 
 	return l.closeFile() // Call the internal method to close the file descriptor
@@ -472,7 +484,7 @@ func (l *Logger) closeFile() error {
 func (l *Logger) Rotate() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if atime.LoadUint32(&l.isClosed) == 1 {
+	if atomic.LoadUint32(&l.isClosed) == 1 {
 		return errors.New("logger closed")
 	}
 	// Determine reason for manual Rotate to align with test expectations and original behavior:
