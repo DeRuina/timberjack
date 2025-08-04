@@ -525,7 +525,7 @@ func (l *Logger) openNew(reasonForBackup string) error {
 	}
 
 	name := l.filename()
-	finalMode := os.FileMode(0600)
+	finalMode := os.FileMode(0640)
 	var oldInfo os.FileInfo
 
 	info, err := osStat(name)

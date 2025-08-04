@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -2574,5 +2575,30 @@ func TestWriteToClosedLogger(t *testing.T) {
 	expectedContent := bytes.Join([][]byte{initialContent, writeAfterCloseContent}, nil)
 	if !bytes.Equal(fileContent, expectedContent) {
 		t.Errorf("File content mismatch.\nExpected: %q\nGot:      %q", expectedContent, fileContent)
+	}
+}
+
+func TestOpenNewWithProperPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping permission test on Windows")
+	}
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "test.log")
+	l := &Logger{Filename: file}
+
+	err := l.openNew("size")
+	if err != nil {
+		t.Fatalf("openNew failed: %v", err)
+	}
+
+	stat, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("failed to stat file: %v", err)
+	}
+
+	if stat.Mode().Perm() != 0640 {
+		pr := fmt.Sprintf("%o", stat.Mode().Perm())
+		t.Errorf("file permissions should be 0640, got: %s", pr)
 	}
 }
