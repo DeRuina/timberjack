@@ -19,6 +19,7 @@
 package timberjack
 
 import (
+	"cmp"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -26,7 +27,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +57,8 @@ func safeClose[T any](ch chan T) {
 	}()
 	close(ch)
 }
+
+type rotateAt [2]int
 
 // Logger is an io.WriteCloser that writes to the specified filename.
 //
@@ -142,6 +147,14 @@ type Logger struct {
 	// If multiple rotation conditions are met, the first one encountered typically triggers.
 	RotateAtMinutes []int `json:"rotateAtMinutes" yaml:"rotateAtMinutes"`
 
+	// RotateAt defines specific time within a day to trigger a rotation.
+	// For example, []string{'00:00'} for midnight, []string{'00:00', '12:00'} for
+	// midnight and midday.
+	// Rotations are aligned to the clock minute (second 0).
+	// This operates in addition to RotationInterval and MaxSize.
+	// If multiple rotation conditions are met, the first one encountered typically triggers.
+	RotateAt []string `json:"rotateAt" yaml:"rotateAt"`
+
 	// Internal fields
 	size             int64     // current size of the log file
 	file             *os.File  // current log file
@@ -154,11 +167,11 @@ type Logger struct {
 	millCh    chan bool // channel to signal the mill goroutine
 	startMill sync.Once // ensures mill goroutine is started only once
 
-	// For scheduled rotation goroutine (RotateAtMinutes)
+	// For scheduled rotation goroutine (RotateAt)
 	startScheduledRotationOnce sync.Once      // ensures scheduled rotation goroutine is started only once
 	scheduledRotationQuitCh    chan struct{}  // channel to signal the scheduled rotation goroutine to stop
 	scheduledRotationWg        sync.WaitGroup // waits for the scheduled rotation goroutine to finish
-	processedRotateAtMinutes   []int          // internal storage for sorted and validated RotateAtMinutes
+	processedRotateAt          []rotateAt     // internal storage for sorted and validated RotateAt
 
 	// isBackupTimeFormatValidated flag helps prevent repeated validation checks
 	// on supplied format through configuration
@@ -247,12 +260,11 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 		l.lastRotationTime = now
 	}
 
-	// 2) Scheduled-minute rotation (RotateAtMinutes)
-	if len(l.processedRotateAtMinutes) > 0 {
-		for _, m := range l.processedRotateAtMinutes {
-			// Build the exact minute-mark timestamp in the current hour.
+	// 2) Scheduled time based rotation (RotateAt)
+	if len(l.processedRotateAt) > 0 {
+		for _, m := range l.processedRotateAt {
 			mark := time.Date(now.Year(), now.Month(), now.Day(),
-				now.Hour(), m, 0, 0, l.location())
+				m[0], m[1], 0, 0, l.location())
 			// If we've crossed that mark since the last rotation, fire one rotation.
 			if l.lastRotationTime.Before(mark) && (mark.Before(now) || mark.Equal(now)) {
 				if err := l.rotate("time"); err != nil {
@@ -318,29 +330,78 @@ func (l *Logger) location() *time.Location {
 	return time.UTC
 }
 
+func parseTime(time string) (*rotateAt, error) {
+	parts := strings.Split(time, ":")
+	if len(parts) != 2 {
+		return nil, errors.New("invalid time")
+	}
+	hs, ms := parts[0], parts[1]
+	h, err := strconv.Atoi(hs)
+	if err != nil {
+		return nil, err
+	}
+	m, err := strconv.Atoi(ms)
+	if err != nil {
+		return nil, err
+	}
+
+	if m < 0 || m > 59 || h < 0 || h > 23 {
+		return nil, errors.New("invalid time")
+	}
+
+	return &rotateAt{h, m}, nil
+}
+
+func compareTime(a, b rotateAt) int {
+	h1, m1 := a[0], a[1]
+	h2, m2 := b[0], b[1]
+	if h1 == h2 {
+		return cmp.Compare(m1, m2)
+	}
+	return cmp.Compare(h1, h2)
+}
+
 // ensureScheduledRotationLoopRunning starts the scheduled rotation goroutine if RotateAtMinutes is configured
 // and the goroutine is not already running.
 func (l *Logger) ensureScheduledRotationLoopRunning() {
-	if len(l.RotateAtMinutes) == 0 {
+	if len(l.RotateAtMinutes)+len(l.RotateAt) == 0 {
 		return // No scheduled rotations configured
 	}
 
 	l.startScheduledRotationOnce.Do(func() {
-		// Validate and sort RotateAtMinutes once for efficiency and correctness
-		seenMinutes := make(map[int]bool)
+		var processedRotateAt []rotateAt
 		for _, m := range l.RotateAtMinutes {
-			if m >= 0 && m <= 59 && !seenMinutes[m] { // Ensure minutes are valid (0-59) and unique
-				l.processedRotateAtMinutes = append(l.processedRotateAtMinutes, m)
-				seenMinutes[m] = true
+			if m < 0 || m > 59 {
+				fmt.Fprintf(os.Stderr, "timberjack: [%d] No valid minute specified for RotateAtMinutes.\n", m)
+				continue
+			}
+			for h := 0; h < 24; h++ {
+				processedRotateAt = append(processedRotateAt, rotateAt{h, m})
 			}
 		}
-		if len(l.processedRotateAtMinutes) == 0 {
+
+		for _, t := range l.RotateAt {
+			r, err := parseTime(t)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "timberjack: [%s] No valid time specified for RotateAt.\n", t)
+				continue
+			}
+			processedRotateAt = append(processedRotateAt, *r)
+		}
+
+		if len(processedRotateAt) == 0 {
 			// Optionally log that no valid minutes were found, preventing goroutine start
 			// fmt.Fprintf(os.Stderr, "timberjack: [%s] No valid minutes specified for RotateAtMinutes.\n", l.Filename)
 			return
 		}
-		sort.Ints(l.processedRotateAtMinutes) // Sort for predictable order in calculating next rotation
 
+		// Sort for predictable order in calculating next rotation
+		slices.SortFunc(processedRotateAt, compareTime)
+		processedRotateAt = slices.CompactFunc(processedRotateAt, func(a, b rotateAt) bool {
+			return compareTime(a, b) == 0
+		})
+
+		l.processedRotateAt = processedRotateAt
 		l.scheduledRotationQuitCh = make(chan struct{})
 		l.scheduledRotationWg.Add(1)
 		go l.runScheduledRotations()
@@ -353,7 +414,7 @@ func (l *Logger) runScheduledRotations() {
 	defer l.scheduledRotationWg.Done()
 
 	// This check is redundant if ensureScheduledRotationLoopRunning already validated, but good for safety.
-	if len(l.processedRotateAtMinutes) == 0 {
+	if len(l.processedRotateAt) == 0 {
 		return
 	}
 
@@ -373,15 +434,15 @@ func (l *Logger) runScheduledRotations() {
 		foundNextSlot := false
 
 	determineNextSlot:
-		// Calculate the next rotation time based on the current time and processedRotateAtMinutes.
+		// Calculate the next rotation time based on the current time and processedRotateAt.
 		// Iterate through the current hour, then subsequent hours (up to 24h ahead for robustness
 		// against system sleep or large clock jumps).
 		for hourOffset := 0; hourOffset <= 24; hourOffset++ {
 			// Base time for the hour we are checking (e.g., if now is 10:35, current hour base is 10:00)
 			hourToCheck := time.Date(nowInLocation.Year(), nowInLocation.Month(), nowInLocation.Day(), nowInLocation.Hour(), 0, 0, 0, l.location()).Add(time.Duration(hourOffset) * time.Hour)
 
-			for _, minuteMark := range l.processedRotateAtMinutes { // l.processedRotateAtMinutes is sorted
-				candidateTime := time.Date(hourToCheck.Year(), hourToCheck.Month(), hourToCheck.Day(), hourToCheck.Hour(), minuteMark, 0, 0, l.location())
+			for _, mark := range l.processedRotateAt { // l.processedRotateAt is sorted
+				candidateTime := time.Date(hourToCheck.Year(), hourToCheck.Month(), hourToCheck.Day(), mark[0], mark[1], 0, 0, l.location())
 
 				if candidateTime.After(now) { // Found the earliest future slot
 					nextRotationAbsoluteTime = candidateTime
@@ -392,10 +453,10 @@ func (l *Logger) runScheduledRotations() {
 		}
 
 		if !foundNextSlot {
-			// This should ideally not happen if processedRotateAtMinutes is valid and non-empty.
+			// This should ideally not happen if processedRotateAt is valid and non-empty.
 			// Could occur if currentTime() is unreliable or jumps massively backward.
 			// Log an error and retry calculation after a fallback delay.
-			fmt.Fprintf(os.Stderr, "timberjack: [%s] Could not determine next scheduled rotation time for %v with marks %v. Retrying calculation in 1 minute.\n", l.Filename, nowInLocation, l.processedRotateAtMinutes)
+			fmt.Fprintf(os.Stderr, "timberjack: [%s] Could not determine next scheduled rotation time for %v with marks %v. Retrying calculation in 1 minute.\n", l.Filename, nowInLocation, l.processedRotateAt)
 			select {
 			case <-time.After(time.Minute): // Wait a bit before retrying calculation
 				continue // Restart the outer loop to recalculate

@@ -804,8 +804,8 @@ func TestTimeBasedRotation(t *testing.T) {
 	var found bool
 	for _, f := range files {
 		if strings.HasPrefix(f.Name(), "foobar-") &&
-			strings.HasSuffix(f.Name(), ".log") &&
-			f.Name() != "foobar.log" {
+				strings.HasSuffix(f.Name(), ".log") &&
+				f.Name() != "foobar.log" {
 			rotated := filepath.Join(dir, f.Name())
 			existsWithContent(rotated, b1, t)
 			found = true
@@ -924,6 +924,72 @@ func TestRotateAtMinutes(t *testing.T) {
 
 	// 6) Write at 14:31 → triggers the 30-minute mark rotation, and rolls content2
 	fakeCurrentTime = time.Date(2025, time.May, 12, 14, 31, 0, 0, time.UTC)
+	n, err = l.Write(content3)
+	isNil(err, t)
+	equals(len(content3), n, t)
+	existsWithContent(filename, content3, t)
+	expected2 := backupFileWithReason(dir, "time")
+	existsWithContent(expected2, content2, t)
+	fileCount(dir, 3, t)
+}
+
+// TestRotateAt
+func TestRotateAt(t *testing.T) {
+	currentTime = fakeTime // use our mock clock
+
+	// three distinct payloads
+	content1 := []byte("first content\n")
+	content2 := []byte("second content\n")
+	content3 := []byte("third content\n")
+
+	// configure 0, 15, and 30 minute marks
+	marks := []string{"10:00"}
+
+	// 1) Start just before the 10:00 mark (e.g. 10:00:59 UTC)
+	initial := time.Date(2025, time.May, 12, 10, 0, 59, 0, time.UTC)
+	fakeCurrentTime = initial
+
+	dir := makeTempDir("TestRotateAt", t)
+	defer os.RemoveAll(dir)
+	filename := logFile(dir)
+
+	l := &Logger{
+		Filename:  filename,
+		RotateAt:  marks,
+		MaxSize:   1000,  // disable size-based rotation
+		LocalTime: false, // use UTC for backup timestamps
+	}
+	defer l.Close() // stop scheduling goroutine
+
+	// 2) Write at 10:01 → no rotation yet
+	fakeCurrentTime = time.Date(2025, time.May, 12, 10, 1, 0, 0, time.UTC)
+	n, err := l.Write(content1)
+	isNil(err, t)
+	equals(len(content1), n, t)
+	existsWithContent(filename, content1, t)
+	fileCount(dir, 1, t) // only the live logfile
+
+	// 3) Advance to next day 10:00 exactly, let the goroutine fire
+	fakeCurrentTime = time.Date(2025, time.May, 13, 10, 0, 0, 0, time.UTC)
+	time.Sleep(300 * time.Millisecond)
+
+	// 4) Write at 10:01 → should be on a fresh file, and first-backup is content1
+	fakeCurrentTime = time.Date(2025, time.May, 13, 10, 01, 0, 0, time.UTC)
+	n, err = l.Write(content2)
+	isNil(err, t)
+	equals(len(content2), n, t)
+	existsWithContent(filename, content2, t)
+	expected1 := backupFileWithReason(dir, "time")
+	existsWithContent(expected1, content1, t)
+	fileCount(dir, 2, t)
+
+	// 5) Advance past the next day 10:00 mark without writing → no new rotation
+	fakeCurrentTime = time.Date(2025, time.May, 14, 10, 01, 0, 0, time.UTC)
+	time.Sleep(300 * time.Millisecond)
+	fileCount(dir, 2, t) // still just the live log + one backup
+
+	// 6) Write at 10:00 next day → triggers the mark rotation, and rolls content2
+	fakeCurrentTime = time.Date(2025, time.May, 14, 10, 01, 0, 0, time.UTC)
 	n, err = l.Write(content3)
 	isNil(err, t)
 	equals(len(content3), n, t)
@@ -1169,7 +1235,7 @@ func TestRunScheduledRotations_NoFutureTime(t *testing.T) {
 		scheduledRotationWg:     sync.WaitGroup{},
 		scheduledRotationQuitCh: make(chan struct{}),
 	}
-	logger.processedRotateAtMinutes = []int{0}
+	logger.processedRotateAt = []rotateAt{{0, 0}}
 
 	logger.scheduledRotationWg.Add(1)
 	go logger.runScheduledRotations()
@@ -1188,9 +1254,31 @@ func TestEnsureScheduledRotationLoopRunning_InvalidMinutes(t *testing.T) {
 	}
 	l.ensureScheduledRotationLoopRunning()
 
-	if len(l.processedRotateAtMinutes) != 0 {
-		t.Errorf("expected no valid minutes, got: %v", l.processedRotateAtMinutes)
+	if len(l.processedRotateAt) != 0 {
+		t.Errorf("expected no valid minutes, got: %v", l.processedRotateAt)
 	}
+}
+
+func TestEnsureScheduledRotationLoopRunning_InvalidTimes(t *testing.T) {
+	l := &Logger{
+		RotateAt: []string{"-1:00", "24:00", "00:60", "00:-1", "00", "foo:bar", "foo"}, // invalid times
+	}
+	l.ensureScheduledRotationLoopRunning()
+
+	if len(l.processedRotateAt) != 0 {
+		t.Errorf("expected no valid times, got: %v", l.processedRotateAt)
+	}
+}
+
+func TestEnsureScheduledRotationLoopRunning_DedupMinutesAndTime(t *testing.T) {
+	l := &Logger{
+		RotateAt:        []string{"00:00", "12:30", "14:45"},
+		RotateAtMinutes: []int{0, 30},
+	}
+	l.ensureScheduledRotationLoopRunning()
+
+	// 2*24 for minutes + 1 for time, 00:00/12:30 deduped
+	equals(49, len(l.processedRotateAt), t)
 }
 
 func TestCompressLogFile_ChownFails(t *testing.T) {
@@ -1310,7 +1398,7 @@ func TestCompressLogFile_CopyFails(t *testing.T) {
 
 	err := compressLogFile(src, dst)
 	if err == nil || !strings.Contains(err.Error(), "failed to copy data") &&
-		!strings.Contains(err.Error(), "permission denied") {
+			!strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("expected failure during compression, got: %v", err)
 	}
 }
@@ -1366,7 +1454,7 @@ func TestRunScheduledRotations_NoFutureSlot(t *testing.T) {
 		RotateAtMinutes:         []int{0},
 		scheduledRotationQuitCh: make(chan struct{}),
 	}
-	logger.processedRotateAtMinutes = []int{0}
+	logger.processedRotateAt = []rotateAt{{0, 0}}
 	logger.scheduledRotationWg.Add(1)
 
 	go logger.runScheduledRotations()
@@ -1659,8 +1747,8 @@ func TestEnsureScheduledRotationLoopRunning_Empty(t *testing.T) {
 	}
 	l.ensureScheduledRotationLoopRunning()
 
-	if len(l.processedRotateAtMinutes) != 0 {
-		t.Errorf("expected no processed rotation minutes, got: %v", l.processedRotateAtMinutes)
+	if len(l.processedRotateAt) != 0 {
+		t.Errorf("expected no processed rotation minutes, got: %v", l.processedRotateAt)
 	}
 }
 
@@ -1670,8 +1758,8 @@ func TestEnsureScheduledRotationLoopRunning_InvalidMinutes_1(t *testing.T) {
 	}
 	l.ensureScheduledRotationLoopRunning()
 
-	if len(l.processedRotateAtMinutes) != 0 {
-		t.Errorf("expected 0 valid minutes, got: %v", l.processedRotateAtMinutes)
+	if len(l.processedRotateAt) != 0 {
+		t.Errorf("expected 0 valid minutes, got: %v", l.processedRotateAt)
 	}
 
 	if l.scheduledRotationQuitCh != nil {
@@ -1694,7 +1782,7 @@ func TestRunScheduledRotations_NoFutureSlotFallback(t *testing.T) {
 		RotateAtMinutes:         []int{0},
 		scheduledRotationQuitCh: make(chan struct{}),
 	}
-	logger.processedRotateAtMinutes = []int{0}
+	logger.processedRotateAt = []rotateAt{{0, 0}}
 
 	// Start the goroutine
 	logger.scheduledRotationWg.Add(1)
@@ -1899,7 +1987,7 @@ func TestScheduledMinuteRotationFails(t *testing.T) {
 		Filename:        file,
 		RotateAtMinutes: []int{0},
 	}
-	logger.processedRotateAtMinutes = []int{0}
+	logger.processedRotateAt = []rotateAt{{0, 0}}
 	logger.scheduledRotationQuitCh = make(chan struct{})
 
 	logger.lastRotationTime = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -1927,7 +2015,7 @@ func TestRunScheduledRotations_CannotFindNextSlot(t *testing.T) {
 		RotateAtMinutes:         []int{0},
 		scheduledRotationQuitCh: make(chan struct{}),
 	}
-	logger.processedRotateAtMinutes = []int{0}
+	logger.processedRotateAt = []rotateAt{{0, 0}}
 	logger.scheduledRotationWg.Add(1)
 
 	go logger.runScheduledRotations()
@@ -1966,7 +2054,7 @@ func TestRunScheduledRotations_NoFutureSlotFound(t *testing.T) {
 		Filename:        "mock.log",
 		RotateAtMinutes: []int{0},
 	}
-	logger.processedRotateAtMinutes = []int{0}
+	logger.processedRotateAt = []rotateAt{{0, 0}}
 	logger.scheduledRotationQuitCh = make(chan struct{})
 
 	logger.scheduledRotationWg.Add(1)
@@ -1988,10 +2076,10 @@ func TestScheduledRotation_TimerFiresAndRotates(t *testing.T) {
 	file := filepath.Join(tmpDir, "timerfire.log")
 
 	logger := &Logger{
-		Filename:        file,
-		RotateAtMinutes: []int{1}, // Next minute after 'now'
+		Filename:          file,
+		RotateAtMinutes:   []int{1}, // Next minute after 'now'
+		processedRotateAt: []rotateAt{{10, 1}},
 	}
-	logger.processedRotateAtMinutes = []int{1}
 	logger.scheduledRotationQuitCh = make(chan struct{})
 	logger.lastRotationTime = now.Add(-time.Hour) // So it qualifies
 
@@ -2054,10 +2142,10 @@ func TestRunScheduledRotations_FallbackRetry(t *testing.T) {
 	}
 
 	logger := &Logger{
-		Filename:                 "test.log",
-		RotateAtMinutes:          []int{0},
-		processedRotateAtMinutes: []int{0},
-		scheduledRotationQuitCh:  make(chan struct{}),
+		Filename:                "test.log",
+		RotateAtMinutes:         []int{0},
+		processedRotateAt:       []rotateAt{{0, 0}},
+		scheduledRotationQuitCh: make(chan struct{}),
 	}
 
 	logger.scheduledRotationWg.Add(1)
@@ -2073,10 +2161,10 @@ func TestRunScheduledRotations_TimerFires(t *testing.T) {
 	logFile := filepath.Join(tmp, "test.log")
 
 	logger := &Logger{
-		Filename:                 logFile,
-		RotateAtMinutes:          []int{1},
-		processedRotateAtMinutes: []int{1},
-		scheduledRotationQuitCh:  make(chan struct{}),
+		Filename:                logFile,
+		RotateAtMinutes:         []int{1},
+		processedRotateAt:       []rotateAt{{0, 1}},
+		scheduledRotationQuitCh: make(chan struct{}),
 	}
 
 	logger.lastRotationTime = time.Now().Add(-time.Hour)
@@ -2177,10 +2265,10 @@ func TestRunScheduledRotations_NoFutureSlotRetry(t *testing.T) {
 	}
 
 	logger := &Logger{
-		Filename:                 "noop.log",
-		RotateAtMinutes:          []int{0}, // only candidate is "00"
-		processedRotateAtMinutes: []int{0},
-		scheduledRotationQuitCh:  make(chan struct{}),
+		Filename:                "noop.log",
+		RotateAtMinutes:         []int{0}, // only candidate is "00"
+		processedRotateAt:       []rotateAt{{0, 0}},
+		scheduledRotationQuitCh: make(chan struct{}),
 	}
 
 	logger.scheduledRotationWg.Add(1)
@@ -2199,10 +2287,10 @@ func TestRunScheduledRotations_RotateFails(t *testing.T) {
 
 	// Force rotate to fail by setting invalid filename
 	logger := &Logger{
-		Filename:                 "/invalid/should/fail.log",
-		RotateAtMinutes:          []int{0},
-		processedRotateAtMinutes: []int{0},
-		scheduledRotationQuitCh:  make(chan struct{}),
+		Filename:                "/invalid/should/fail.log",
+		RotateAtMinutes:         []int{0},
+		processedRotateAt:       []rotateAt{{0, 0}},
+		scheduledRotationQuitCh: make(chan struct{}),
 	}
 
 	logger.scheduledRotationWg.Add(1)
@@ -2288,10 +2376,10 @@ func TestRunScheduledRotations_FallbackOnRotateFailure(t *testing.T) {
 	_ = os.WriteFile(logFile, []byte("seed"), 0644)
 
 	logger := &Logger{
-		Filename:                 logFile,
-		RotateAtMinutes:          []int{0},
-		processedRotateAtMinutes: []int{0},
-		scheduledRotationQuitCh:  make(chan struct{}),
+		Filename:                logFile,
+		RotateAtMinutes:         []int{0},
+		processedRotateAt:       []rotateAt{{0, 0}},
+		scheduledRotationQuitCh: make(chan struct{}),
 	}
 	logger.scheduledRotationWg.Add(1)
 
@@ -2480,8 +2568,8 @@ func TestTruncateFractional(t *testing.T) {
 
 		// Verify that other time components are unchanged
 		if got.Year() != baseTime.Year() || got.Month() != baseTime.Month() ||
-			got.Day() != baseTime.Day() || got.Hour() != baseTime.Hour() ||
-			got.Minute() != baseTime.Minute() || got.Second() != baseTime.Second() {
+				got.Day() != baseTime.Day() || got.Hour() != baseTime.Hour() ||
+				got.Minute() != baseTime.Minute() || got.Second() != baseTime.Second() {
 			t.Errorf("truncateFractional(_, %d) modified time components", tt.n)
 		}
 	}
