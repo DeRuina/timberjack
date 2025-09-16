@@ -50,7 +50,9 @@ func main() {
 		RotationInterval: 24 * time.Hour,           // Rotate daily if no other rotation met
 		RotateAtMinutes:  []int{0, 15, 30, 45},     // Also rotate at HH:00, HH:15, HH:30, HH:45
 		RotateAt:         []string{"00:00", "12:00"}, // Also rotate at 00:00 and 12:00 each day
-   		BackupTimeFormat: "2006-01-02-15-04-05",    // // Rotated files will have format <logfilename>-2006-01-02-15-04-05-<reason>.log
+   	BackupTimeFormat: "2006-01-02-15-04-05",    // Rotated files will have format <logfilename>-2006-01-02-15-04-05-<reason>.log
+    AppendAfterExt:   true,                     // put timestamp after ".log" (foo.log-<timestamp>-<reason>)
+    
 	}
 	log.SetOutput(logger)
 	defer logger.Close() // Ensure logger is closed on application exit to stop goroutines
@@ -81,16 +83,17 @@ go func() {
 
 ```go
 type Logger struct {
-    Filename         string        // File to write logs to
-    MaxSize          int           // Max size (MB) before rotation (default: 100)
-    MaxAge           int           // Max age (days) to retain old logs
-    MaxBackups       int           // Max number of backups to keep
-    LocalTime        bool          // Use local time in rotated filenames
-    Compress         bool          // Compress rotated logs (gzip)
-    RotationInterval time.Duration // Rotate after this duration (if > 0)
-    RotateAtMinutes  []int         // Specific minutes within an hour (0–59) to trigger rotation
-    RotateAt         []string      // Specific daily times (HH:MM, 24-hour) to trigger rotation
-    BackupTimeFormat string        // Optional. If unset or invalid, defaults to 2006-01-02T15-04-05.000 (with fallback warning)
+    Filename          string        // File to write logs to
+    MaxSize           int           // Max size (MB) before rotation (default: 100)
+    MaxAge            int           // Max age (days) to retain old logs
+    MaxBackups        int           // Max number of backups to keep
+    LocalTime         bool          // Use local time in rotated filenames
+    Compress          bool          // Compress rotated logs (gzip)
+    RotationInterval  time.Duration // Rotate after this duration (if > 0)
+    RotateAtMinutes   []int         // Specific minutes within an hour (0–59) to trigger rotation
+    RotateAt          []string      // Specific daily times (HH:MM, 24-hour) to trigger rotation
+    BackupTimeFormat  string        // Optional. If unset or invalid, defaults to 2006-01-02T15-04-05.000 (with fallback warning)
+    AppendAfterExt    bool          // if true, name backups like foo.log-<timestamp>-<reason> defaults to foo-<timestamp>-<reason>.log
 }
 ```
 
@@ -104,6 +107,7 @@ type Logger struct {
 
 Rotated files are renamed using the pattern:
 
+By default, rotated files are named:
 ```
 <name>-<timestamp>-<reason>.log
 ```
@@ -114,6 +118,20 @@ For example:
 /var/log/myapp/foo-2025-04-30T15-00-00.000-size.log
 /var/log/myapp/foo-2025-04-30T22-15-42.123-time.log
 /var/log/myapp/foo-2025-05-01T10-30-00.000-time.log.gz  (if compressed)
+```
+
+If you prefer the extension to stay attached to the live name (better shell TAB completion),
+set `AppendAfterExt: true`:
+```
+<name>.log-<timestamp>-<reason>
+```
+
+For example:
+
+```
+/var/log/myapp/foo.log-2025-04-30T15-00-00.000-size
+/var/log/myapp/foo.log-2025-04-30T22-15-42.123-time
+/var/log/myapp/foo.log-2025-05-01T10-30-00.000-time.gz (if compressed)
 ```
 
 ### Rotation modes at a glance

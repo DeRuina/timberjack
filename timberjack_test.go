@@ -804,8 +804,8 @@ func TestTimeBasedRotation(t *testing.T) {
 	var found bool
 	for _, f := range files {
 		if strings.HasPrefix(f.Name(), "foobar-") &&
-				strings.HasSuffix(f.Name(), ".log") &&
-				f.Name() != "foobar.log" {
+			strings.HasSuffix(f.Name(), ".log") &&
+			f.Name() != "foobar.log" {
 			rotated := filepath.Join(dir, f.Name())
 			existsWithContent(rotated, b1, t)
 			found = true
@@ -1126,16 +1126,18 @@ func TestBackupName(t *testing.T) {
 	name := "/tmp/test.log"
 	rotationTime := time.Date(2020, 1, 2, 3, 4, 5, 6_000_000, time.UTC)
 
-	resultUTC := backupName(name, false, "size", rotationTime, backupTimeFormat)
+	// default (before-ext)
+	resultUTC := backupName(name, false, "size", rotationTime, backupTimeFormat, false)
 	expectedUTC := "/tmp/test-2020-01-02T03-04-05.006-size.log"
 	if resultUTC != expectedUTC {
 		t.Errorf("expected %q, got %q", expectedUTC, resultUTC)
 	}
 
-	resultLocal := backupName(name, true, "manual", rotationTime.In(time.Local), backupTimeFormat)
-	// Format expected using time.Local — hard to assert string equality unless mocked
-	if !strings.Contains(resultLocal, "-manual.log") {
-		t.Errorf("expected suffix -manual.log, got: %s", resultLocal)
+	// after-ext
+	after := backupName(name, false, "size", rotationTime, backupTimeFormat, true)
+	expectedAfter := "/tmp/test.log-2020-01-02T03-04-05.006-size"
+	if after != expectedAfter {
+		t.Errorf("expected %q, got %q", expectedAfter, after)
 	}
 }
 
@@ -1398,7 +1400,7 @@ func TestCompressLogFile_CopyFails(t *testing.T) {
 
 	err := compressLogFile(src, dst)
 	if err == nil || !strings.Contains(err.Error(), "failed to copy data") &&
-			!strings.Contains(err.Error(), "permission denied") {
+		!strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("expected failure during compression, got: %v", err)
 	}
 }
@@ -2568,8 +2570,8 @@ func TestTruncateFractional(t *testing.T) {
 
 		// Verify that other time components are unchanged
 		if got.Year() != baseTime.Year() || got.Month() != baseTime.Month() ||
-				got.Day() != baseTime.Day() || got.Hour() != baseTime.Hour() ||
-				got.Minute() != baseTime.Minute() || got.Second() != baseTime.Second() {
+			got.Day() != baseTime.Day() || got.Hour() != baseTime.Hour() ||
+			got.Minute() != baseTime.Minute() || got.Second() != baseTime.Second() {
 			t.Errorf("truncateFractional(_, %d) modified time components", tt.n)
 		}
 	}

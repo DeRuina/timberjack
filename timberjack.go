@@ -155,6 +155,11 @@ type Logger struct {
 	// If multiple rotation conditions are met, the first one encountered typically triggers.
 	RotateAt []string `json:"rotateAt" yaml:"rotateAt"`
 
+	// AppendAfterExt controls where the timestamp/reason go.
+	// false (default):  <name>-<timestamp>-<reason>.log
+	// true:             <name>.log-<timestamp>-<reason>
+	AppendAfterExt bool `json:"appendAfterExt" yaml:"appendAfterExt"`
+
 	// Internal fields
 	size             int64     // current size of the log file
 	file             *os.File  // current log file
@@ -604,14 +609,18 @@ func (l *Logger) openNew(reasonForBackup string) error {
 				// backup format is empty or invalid.
 				// use backupformat constant
 				l.BackupTimeFormat = backupTimeFormat
-				fmt.Fprintf(os.Stderr, "timberjack: invalid BackupTimeFormat: %v — falling back to default format: %s\n", validationErr, backupTimeFormat)
+				if !errors.Is(validationErr, ErrEmptyBackupTimeFormatField) {
+					fmt.Fprintf(os.Stderr,
+						"timberjack: invalid BackupTimeFormat: %v — falling back to default format: %s\n",
+						validationErr, backupTimeFormat)
+				}
 			}
 			// mark the backup format as validated if there was no error.
 			// this would prevent validation checks in every rotation
 			l.isBackupTimeFormatValidated = true
 		}
 
-		newname := backupName(name, l.LocalTime, reasonForBackup, rotationTimeForBackup, l.BackupTimeFormat)
+		newname := backupName(name, l.LocalTime, reasonForBackup, rotationTimeForBackup, l.BackupTimeFormat, l.AppendAfterExt)
 		if errRename := osRename(name, newname); errRename != nil {
 			return fmt.Errorf("can't rename log file: %s", errRename)
 		}
@@ -657,7 +666,7 @@ func (l *Logger) shouldTimeRotate() bool {
 // backupName creates a new backup filename by inserting a timestamp and a rotation reason
 // ("time" or "size") between the filename prefix and the extension.
 // It uses the local time if requested (otherwise UTC).
-func backupName(name string, local bool, reason string, t time.Time, fileTimeFormat string) string {
+func backupName(name string, local bool, reason string, t time.Time, fileTimeFormat string, appendAfterExt bool) string {
 	dir := filepath.Dir(name)
 	filename := filepath.Base(name)
 	ext := filepath.Ext(filename)
@@ -669,6 +678,13 @@ func backupName(name string, local bool, reason string, t time.Time, fileTimeFor
 	}
 	// Format the timestamp for the backup file.
 	timestamp := t.In(currentLoc).Format(fileTimeFormat)
+	if appendAfterExt {
+		// <name><ext>-<ts>-<reason>
+		// e.g. httpd.log-2025-01-01T00-00-00.000-size
+		return filepath.Join(dir, fmt.Sprintf("%s%s-%s-%s", prefix, ext, timestamp, reason))
+	}
+
+	// default: <name>-<ts>-<reason><ext>
 	return filepath.Join(dir, fmt.Sprintf("%s-%s-%s%s", prefix, timestamp, reason, ext))
 }
 
@@ -902,37 +918,55 @@ func (l *Logger) oldLogFiles() ([]logInfo, error) {
 }
 
 // timeFromName extracts the formatted timestamp from the backup filename.
-// It expects filenames like "prefix-YYYY-MM-DDTHH-MM-SS.mmm-reason.ext" or "...ext.gz".
+// It expects filenames like "prefix-YYYY-MM-DDTHH-MM-SS.mmm-reason.ext" or "prefix.ext-YYYY-MM-DDTHH-MM-SS.mmm-reason[.gz]"
 func (l *Logger) timeFromName(filename, prefix, ext string) (time.Time, error) {
-	if !strings.HasPrefix(filename, prefix) {
-		return time.Time{}, errors.New("mismatched prefix")
-	}
-	if !strings.HasSuffix(filename, ext) {
-		return time.Time{}, errors.New("mismatched extension")
-	}
-
-	// Remove prefix and suffix to get "YYYY-MM-DDTHH-MM-SS.mmm-reason"
-	trimmed := filename[len(prefix) : len(filename)-len(ext)]
-
-	// The timestamp is before the last hyphen (which precedes the reason).
-	lastHyphenIdx := strings.LastIndex(trimmed, "-")
-	if lastHyphenIdx == -1 {
-		return time.Time{}, fmt.Errorf("malformed backup filename: missing reason separator in '%s'", trimmed)
-	}
-
-	timestampPart := trimmed[:lastHyphenIdx]
-
-	// Determine location (UTC or Local) based on Logger's LocalTime setting for parsing.
-	currentLoc := time.UTC
-	if l.LocalTime {
-		currentLoc = time.Local
-	}
-
 	layout := l.BackupTimeFormat
 	if layout == "" {
 		layout = backupTimeFormat
 	}
-	return time.ParseInLocation(layout, timestampPart, currentLoc)
+	loc := time.UTC
+	if l.LocalTime {
+		loc = time.Local
+	}
+
+	if !l.AppendAfterExt {
+		// Keep legacy behavior for error messages to satisfy existing tests
+		if !strings.HasPrefix(filename, prefix) {
+			return time.Time{}, errors.New("mismatched prefix")
+		}
+		if !strings.HasSuffix(filename, ext) {
+			return time.Time{}, errors.New("mismatched extension")
+		}
+		// "<prefix><timestamp>-<reason><ext>"
+		trimmed := filename[len(prefix) : len(filename)-len(ext)]
+		lastHyphenIdx := strings.LastIndex(trimmed, "-")
+		if lastHyphenIdx == -1 {
+			return time.Time{}, fmt.Errorf("malformed backup filename: missing reason separator in %q", trimmed)
+		}
+		ts := trimmed[:lastHyphenIdx]
+		return time.ParseInLocation(layout, ts, loc)
+	}
+
+	// After-ext parsing:
+	// base is "<name><ext>" (e.g., "foo.log")
+	base := prefix[:len(prefix)-1] + ext
+
+	// Allow optional trailing ".gz" (compressed backups)
+	nameNoGz := strings.TrimSuffix(filename, compressSuffix)
+
+	// nameNoGz must start with "<base>-"
+	if !strings.HasPrefix(nameNoGz, base+"-") {
+		return time.Time{}, fmt.Errorf("malformed backup filename: %q", filename)
+	}
+
+	// nameNoGz = "<base>-<timestamp>-<reason>"
+	trimmed := nameNoGz[len(base)+1:]
+	lastHyphenIdx := strings.LastIndex(trimmed, "-")
+	if lastHyphenIdx == -1 {
+		return time.Time{}, fmt.Errorf("malformed backup filename: %q", filename)
+	}
+	ts := trimmed[:lastHyphenIdx]
+	return time.ParseInLocation(layout, ts, loc)
 }
 
 // max returns the maximum size in bytes of log files before rolling.
