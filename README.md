@@ -117,6 +117,7 @@ type Logger struct {
     // Back-compat shim for old configs; will be removed in v2.
     Compress          bool
 
+
     RotationInterval  time.Duration // Rotate after this duration (if > 0)
     RotateAtMinutes   []int         // Specific minutes within an hour (0–59) to trigger rotation
     RotateAt          []string      // Specific daily times (HH:MM, 24-hour) to trigger rotation
@@ -151,7 +152,9 @@ For example:
 ```
 
 If you prefer the extension to stay attached to the live name (better shell TAB completion),
+
 set `AppendTimeAfterExt: true`:
+
 ```
 <name>.log-<timestamp>-<reason>
 ```

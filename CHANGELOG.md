@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.6](https://github.com/DeRuina/timberjack/compare/v1.3.5...v1.3.6) (2025-09-16)
+
+### Features
+
+* Append the backupTimeFormat to the end of file name ([#40](https://github.com/DeRuina/timberjack/issues/37)) ([15c6d81](https://github.com/DeRuina/timberjack/commit/15c6d813214c9c7f1372af55f9b705d9d2a3a88e))
+
+
 ## [1.3.5](https://github.com/DeRuina/timberjack/compare/v1.3.4...v1.3.5) (2025-08-19)
 
 ### Features
