@@ -2886,3 +2886,171 @@ func TestCompressionUnknownMeansNone(t *testing.T) {
 		t.Fatalf("expected an uncompressed rotated file ending with '.log', none found in %s", dir)
 	}
 }
+
+// helper: create a temp dir
+func mktempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "tj-")
+	if err != nil {
+		t.Fatalf("MkDirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// helper: write once so the file exists and logger state is initialized
+func writeOnce(t *testing.T, l *Logger, data string) {
+	t.Helper()
+	if _, err := l.Write([]byte(data)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+}
+
+func TestRotateWithReason_CustomReason_Sanitized(t *testing.T) {
+	dir := mktempDir(t)
+	name := filepath.Join(dir, "app.log")
+
+	l := &Logger{
+		Filename: name,
+		// keep defaults: no compression, no scheduled, etc.
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	// create the live file
+	writeOnce(t, l, "hi\n")
+
+	// Includes spaces, punctuation, and caps -> should sanitize to "reload-now-v2"
+	reason := "  Reload  NOW!! v2  "
+	if err := l.RotateWithReason(reason); err != nil {
+		t.Fatalf("RotateWithReason: %v", err)
+	}
+
+	// Expect exactly one rotated file ending with "-reload-now-v2.log"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+
+	var matches []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		// the current log stays "app.log" — rotated must not be that
+		if n == "app.log" {
+			continue
+		}
+		if strings.HasSuffix(n, "-reload-now-v2.log") {
+			matches = append(matches, n)
+		}
+	}
+
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 rotated file with '-reload-now-v2.log' suffix, got %d: %v", len(matches), matches)
+	}
+}
+
+func TestRotateWithReason_EmptyFallsBackToTimeWhenDue(t *testing.T) {
+	// Control time so shouldTimeRotate() returns true.
+	oldNow := currentTime
+	defer func() { currentTime = oldNow }()
+
+	now := time.Date(2025, 5, 22, 10, 0, 0, 0, time.UTC)
+	currentTime = func() time.Time { return now }
+
+	dir := mktempDir(t)
+	name := filepath.Join(dir, "x.log")
+
+	l := &Logger{
+		Filename:         name,
+		RotationInterval: time.Hour, // 1h interval
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	// First write initializes lastRotationTime to 'now'.
+	writeOnce(t, l, "boot\n")
+
+	// Advance time beyond the interval so an interval rotation is due.
+	now = now.Add(2 * time.Hour)
+
+	// Empty reason => legacy logic: since interval is due, we should tag "time".
+	if err := l.RotateWithReason(""); err != nil {
+		t.Fatalf("RotateWithReason: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+
+	found := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if n == "x.log" {
+			continue
+		}
+		if strings.HasSuffix(n, "-time.log") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a rotated file with '-time.log' suffix when interval is due")
+	}
+}
+
+func TestRotateWithReason_EmptyFallsBackToSizeWhenNotDue(t *testing.T) {
+	// Control time so shouldTimeRotate() returns false.
+	oldNow := currentTime
+	defer func() { currentTime = oldNow }()
+
+	now := time.Date(2025, 5, 22, 10, 0, 0, 0, time.UTC)
+	currentTime = func() time.Time { return now }
+
+	dir := mktempDir(t)
+	name := filepath.Join(dir, "y.log")
+
+	l := &Logger{
+		Filename:         name,
+		RotationInterval: time.Hour, // 1h interval, but we won't advance enough
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	// First write initializes lastRotationTime to 'now'.
+	writeOnce(t, l, "hello\n")
+
+	// Advance only 10 minutes — still not due.
+	now = now.Add(10 * time.Minute)
+
+	// Empty reason => legacy logic: interval not due => "size".
+	if err := l.RotateWithReason(""); err != nil {
+		t.Fatalf("RotateWithReason: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+
+	found := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if n == "y.log" {
+			continue
+		}
+		if strings.HasSuffix(n, "-size.log") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a rotated file with '-size.log' suffix when interval is not due")
+	}
+}

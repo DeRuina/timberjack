@@ -554,25 +554,10 @@ func (l *Logger) closeFile() error {
 	return err
 }
 
-// Rotate causes Logger to close the existing log file and immediately create a
-// new one. This is a helper function for applications that want to initiate
-// rotations outside of the normal rotation rules, such as in response to
-// SIGHUP. After rotating, this initiates compression and removal of old log
-// files according to the configuration.
+// Rotate forces an immediate rotation using the legacy auto-reason logic.
+// (empty reason => "time" if an interval rotation is due, otherwise "size")
 func (l *Logger) Rotate() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if atomic.LoadUint32(&l.isClosed) == 1 {
-		return errors.New("logger closed")
-	}
-	// Determine reason for manual Rotate to align with test expectations and original behavior:
-	// If an interval rotation is also due at this moment, label it "time".
-	// Otherwise, label it "size" as a general default for manual rotation (tests often expect this).
-	reason := "size"
-	if l.shouldTimeRotate() { // shouldTimeRotate checks RotationInterval based on lastRotationTime
-		reason = "time"
-	}
-	return l.rotate(reason)
+	return l.RotateWithReason("")
 }
 
 // rotate closes the current file, moves it aside with a timestamp in the name,
@@ -590,6 +575,34 @@ func (l *Logger) rotate(reason string) error {
 	}
 	l.mill() // Trigger backup processing (compression, cleanup)
 	return nil
+}
+
+// RotateWithReason forces a rotation immediately and tags the backup filename
+// with the provided reason (after sanitization). If the sanitized reason is
+// empty, it falls back to the default behavior used by Rotate(): "time" if an
+// interval rotation is due, otherwise "size".
+//
+// NOTE: Like Rotate(), this does not modify lastRotationTime. If an interval
+// rotation is already due, a subsequent write may still trigger another
+// interval-based rotation.
+func (l *Logger) RotateWithReason(reason string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if atomic.LoadUint32(&l.isClosed) == 1 {
+		return errors.New("logger closed")
+	}
+
+	r := sanitizeReason(reason)
+	if r == "" {
+		// keep legacy Rotate() semantics
+		r = "size"
+		if l.shouldTimeRotate() {
+			r = "time"
+		}
+	}
+
+	return l.rotate(r)
 }
 
 // openNew creates a new log file for writing.
@@ -1171,6 +1184,38 @@ func trimCompressionSuffix(name string) string {
 	name = strings.TrimSuffix(name, compressSuffix)
 	name = strings.TrimSuffix(name, zstdSuffix)
 	return name
+}
+
+// sanitizeReason turns an arbitrary string into a safe, short tag for filenames.
+// Allowed: [a-z0-9_-]. Everything else becomes '-'. Collapses repeats, trims edges.
+// Returns empty string if nothing usable remains.
+func sanitizeReason(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return ""
+	}
+	const max = 32
+
+	var b strings.Builder
+	lastDash := false
+	for _, r := range s {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
+		if ok {
+			b.WriteRune(r)
+			lastDash = (r == '-')
+		} else {
+			// replace anything else (including whitespace) with a single '-'
+			if !lastDash && b.Len() > 0 {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+		if b.Len() >= max {
+			break
+		}
+	}
+	out := strings.Trim(b.String(), "-_")
+	return out
 }
 
 // logInfo is a convenience struct to return the filename and its embedded

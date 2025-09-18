@@ -73,16 +73,27 @@ import (
 )
 
 
-l := &timberjack.Logger{}
-log.SetOutput(l)
-c := make(chan os.Signal, 1)
-signal.Notify(c, syscall.SIGHUP)
+func main() {
+    l := &timberjack.Logger{ Filename: "/var/log/myapp/foo.log" }
+    log.SetOutput(l)
+    defer l.Close()
 
-go func() {
-    for range c {
-        l.Rotate()
-    }
-}()
+    // Manual rotation on SIGHUP
+    c := make(chan os.Signal, 1)
+    signal.Notify(c, syscall.SIGHUP)
+
+    go func() {
+        for range c {
+            // 1) Classic behavior: auto-pick "time" (if due) or "size"
+            // _ = l.Rotate()
+
+            // 2) New: tag the backup with your own reason
+            _ = l.RotateWithReason("reload")
+        }
+    }()
+
+    // ...
+}
 ```
 
 
@@ -120,7 +131,9 @@ type Logger struct {
 1. **Size-Based**: If a write operation causes the current log file to exceed `MaxSize`, the file is rotated before the write. The backup filename will include `-size` as the reason.
 2. **Time-Based (Interval)**: If `RotationInterval` is set (e.g., `24 * time.Hour` for daily rotation) and this duration has passed since the last rotation (of any type that updates the interval timer), the file is rotated upon the next write. The backup filename will include `-time` as the reason.
 3. **Scheduled (Clock-Aligned)**: If `RotateAtMinutes` and/or `RotateAt` are configured (e.g., `[]int{0,30}` → rotate at `HH:00` and `HH:30`; or `[]string{"00:00"}` → rotate at midnight), a background goroutine triggers rotation at those times. These rotations use `-time` as the reason.
-4. **Manual**: You can call `Logger.Rotate()` directly to force a rotation at any time. The reason in the backup filename will be `"-time"` if an interval rotation was also due, otherwise it defaults to `"-size"`.
+4. **Manual**: 
+    - `Logger.Rotate()` forces rotation now. The backup reason will be `"time"` if an interval rotation is due, otherwise `"size"`.
+    - `Logger.RotateWithReason("your-reason")` forces rotation and tags the backup with your **sanitized** reason (see below). If the provided reason is empty after sanitization, it falls back to the same behavior as Rotate().
 
 Rotated files are renamed using the pattern:
 
@@ -151,6 +164,14 @@ For example:
 /var/log/myapp/foo.log-2025-05-01T10-30-00.000-time.gz (if compressed)
 ```
 
+Manual rotation with a custom reason `_ = logger.RotateWithReason("reload-now v2")`
+
+For example:
+
+```
+foo-2025-05-01T10-30-00.000-reload-now-v2.log
+```
+
 ### Compression
 
 - Pick the algorithm with `Compression: "none" | "gzip" | "zstd"`.
@@ -174,7 +195,8 @@ On each new log file creation, timberjack:
 | **Interval-based**             | `RotationInterval > 0`                        | On **next write** after `now - lastRotationTime ≥ RotationInterval` | Duration since last rotation |           No          |             No            |     **Yes** (to `now`)     | `-time`                                                   | “Every N” rotations; not aligned to the wall clock.                                                               |
 | **Scheduled minute-based**     | `RotateAtMinutes` (e.g. `[]int{0,30}`)        | At each `HH:MM` where minute matches                                | Clock minute marks           |        **Yes**        |          **Yes**          |           **Yes**          | `-time`                                                   | Expands minutes across all 24 hours. Invalid minutes are ignored **with a warning**. De-duplicated vs `RotateAt`. |
 | **Scheduled daily fixed time** | `RotateAt` (e.g. `[]string{"00:00","12:00"}`) | At each listed `HH:MM` daily                                        | Clock minute marks           |        **Yes**        |          **Yes**          |           **Yes**          | `-time`                                                   | Ideal for “rotate at midnight”. De-duplicated vs `RotateAtMinutes`.                                               |
-| **Manual**                     | `Logger.Rotate()`                             | When called                                                         | Immediate                    |           No          |            N/A            |           **No**           | `-time` if an interval rotation is due; otherwise `-size` | Handy for SIGHUP.                                                                                                 |
+| **Manual**                     | `Logger.Rotate()`                             | When called                                                         | Immediate                    |           No          |            N/A            |           **No**           | `-time` if an interval rotation is due; otherwise `-size` | Handy for SIGHUP.
+| **Manual (custom reason)**   | `Logger.RotateWithReason(s)`     | When called | Immediate | No | N/A | **No** | `-<sanitized reason>` | Falls back to `Rotate()` behavior if `s` sanitizes to empty. |
 
 > **Time zone:** scheduling and filename timestamps use UTC by default, or local time if `LocalTime: true`.
 
