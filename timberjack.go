@@ -155,10 +155,10 @@ type Logger struct {
 	// If multiple rotation conditions are met, the first one encountered typically triggers.
 	RotateAt []string `json:"rotateAt" yaml:"rotateAt"`
 
-	// AppendAfterExt controls where the timestamp/reason go.
+	// AppendTimeAfterExt controls where the timestamp/reason go.
 	// false (default):  <name>-<timestamp>-<reason>.log
 	// true:             <name>.log-<timestamp>-<reason>
-	AppendAfterExt bool `json:"appendAfterExt" yaml:"appendAfterExt"`
+	AppendTimeAfterExt bool `json:"appendTimeAfterExt" yaml:"appendTimeAfterExt"`
 
 	// Internal fields
 	size             int64     // current size of the log file
@@ -620,7 +620,7 @@ func (l *Logger) openNew(reasonForBackup string) error {
 			l.isBackupTimeFormatValidated = true
 		}
 
-		newname := backupName(name, l.LocalTime, reasonForBackup, rotationTimeForBackup, l.BackupTimeFormat, l.AppendAfterExt)
+		newname := backupName(name, l.LocalTime, reasonForBackup, rotationTimeForBackup, l.BackupTimeFormat, l.AppendTimeAfterExt)
 		if errRename := osRename(name, newname); errRename != nil {
 			return fmt.Errorf("can't rename log file: %s", errRename)
 		}
@@ -666,7 +666,7 @@ func (l *Logger) shouldTimeRotate() bool {
 // backupName creates a new backup filename by inserting a timestamp and a rotation reason
 // ("time" or "size") between the filename prefix and the extension.
 // It uses the local time if requested (otherwise UTC).
-func backupName(name string, local bool, reason string, t time.Time, fileTimeFormat string, appendAfterExt bool) string {
+func backupName(name string, local bool, reason string, t time.Time, fileTimeFormat string, AppendTimeAfterExt bool) string {
 	dir := filepath.Dir(name)
 	filename := filepath.Base(name)
 	ext := filepath.Ext(filename)
@@ -678,7 +678,7 @@ func backupName(name string, local bool, reason string, t time.Time, fileTimeFor
 	}
 	// Format the timestamp for the backup file.
 	timestamp := t.In(currentLoc).Format(fileTimeFormat)
-	if appendAfterExt {
+	if AppendTimeAfterExt {
 		// <name><ext>-<ts>-<reason>
 		// e.g. httpd.log-2025-01-01T00-00-00.000-size
 		return filepath.Join(dir, fmt.Sprintf("%s%s-%s-%s", prefix, ext, timestamp, reason))
@@ -929,7 +929,7 @@ func (l *Logger) timeFromName(filename, prefix, ext string) (time.Time, error) {
 		loc = time.Local
 	}
 
-	if !l.AppendAfterExt {
+	if !l.AppendTimeAfterExt {
 		// Keep legacy behavior for error messages to satisfy existing tests
 		if !strings.HasPrefix(filename, prefix) {
 			return time.Time{}, errors.New("mismatched prefix")
