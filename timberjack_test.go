@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/fortytw2/leaktest"
+	"github.com/klauspost/compress/zstd"
 )
 
 // !!!NOTE!!!
@@ -2690,5 +2691,198 @@ func TestOpenNewWithProperPermissions(t *testing.T) {
 	if stat.Mode().Perm() != 0640 {
 		pr := fmt.Sprintf("%o", stat.Mode().Perm())
 		t.Errorf("file permissions should be 0640, got: %s", pr)
+	}
+}
+
+// waitForFileWithSuffix polls dir for a file ending in suffix, up to timeout.
+func waitForFileWithSuffix(t *testing.T, dir, suffix string, timeout time.Duration) (string, error) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ents, _ := os.ReadDir(dir)
+		for _, e := range ents {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasSuffix(name, suffix) {
+				return filepath.Join(dir, name), nil
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return "", os.ErrNotExist
+}
+
+func readZstdFile(t *testing.T, path string) []byte {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	rd, err := zstd.NewReader(f)
+	if err != nil {
+		t.Fatalf("zstd.NewReader: %v", err)
+	}
+	defer rd.Close()
+	data, err := io.ReadAll(rd)
+	if err != nil {
+		t.Fatalf("read zstd stream: %v", err)
+	}
+	return data
+}
+
+func TestZstdCompression_SizeRotate_DefaultNaming(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "app.log")
+
+	oldMB := megabyte
+	megabyte = 1
+	t.Cleanup(func() { megabyte = oldMB })
+
+	l := &Logger{
+		Filename:    logPath,
+		MaxSize:     10,     // bytes (since megabyte=1)
+		Compression: "zstd", // enable zstd
+	}
+	defer l.Close()
+
+	// 6 bytes per write; two writes => 12 > 10 => rotation
+	msg := []byte("HELLO\n")
+	if _, err := l.Write(msg); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := l.Write(msg); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	// Wait for mill to compress the rotated file.
+	zstFile, err := waitForFileWithSuffix(t, dir, ".log.zst", 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected a .log.zst rotated file in %s", dir)
+	}
+
+	got := readZstdFile(t, zstFile)
+	if !bytes.Equal(got, msg) {
+		t.Fatalf("zstd content mismatch: got %q want %q", string(got), string(msg))
+	}
+}
+func TestZstdCompression_SizeRotate_AppendAfterExt(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "service.log")
+
+	oldMB := megabyte
+	megabyte = 1
+	t.Cleanup(func() { megabyte = oldMB })
+
+	l := &Logger{
+		Filename:           logPath,
+		MaxSize:            9, // two 5-byte writes => 10 > 9 => rotation
+		Compression:        "zstd",
+		AppendTimeAfterExt: true,
+	}
+	defer l.Close()
+
+	msg := []byte("LINE\n") // 5 bytes
+	if _, err := l.Write(msg); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := l.Write(msg); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	// Wait for .zst (append-after-ext form ends with just ".zst").
+	zstFile, err := waitForFileWithSuffix(t, dir, ".zst", 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected a .zst rotated file in %s", dir)
+	}
+	base := filepath.Base(zstFile)
+	if !strings.Contains(base, ".log-") || !strings.Contains(base, "-size") {
+		t.Fatalf("unexpected rotated filename %q; want '.log-<ts>-size.zst'", base)
+	}
+
+	got := readZstdFile(t, zstFile)
+	if !bytes.Equal(got, msg) {
+		t.Fatalf("zstd content mismatch: got %q want %q", string(got), string(msg))
+	}
+}
+
+func TestCompressionPrecedence_ZstdBeatsLegacyCompress(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "prec.log")
+
+	oldMB := megabyte
+	megabyte = 1
+	t.Cleanup(func() { megabyte = oldMB })
+
+	l := &Logger{
+		Filename:    logPath,
+		MaxSize:     9,      // two 5-byte writes => 10 > 9 => rotation
+		Compression: "zstd", // should win
+		Compress:    true,   // legacy would have chosen gzip, but must be ignored
+	}
+	defer l.Close()
+
+	msg := []byte("LINE\n") // 5 bytes
+	if _, err := l.Write(msg); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := l.Write(msg); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	// Should produce .zst, not .gz.
+	if _, err := waitForFileWithSuffix(t, dir, ".zst", 2*time.Second); err != nil {
+		t.Fatalf("expected .zst file; none found")
+	}
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".gz") {
+			t.Fatalf("found unexpected gzip file: %s", e.Name())
+		}
+	}
+}
+
+func TestCompressionUnknownMeansNone(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "none.log")
+
+	oldMB := megabyte
+	megabyte = 1
+	t.Cleanup(func() { megabyte = oldMB })
+
+	l := &Logger{
+		Filename:    logPath,
+		MaxSize:     9,             // two 5-byte writes => 10 > 9 => rotation
+		Compression: "wut-is-this", // unknown -> none
+	}
+	defer l.Close()
+
+	msg := []byte("DATA\n") // 5 bytes
+	if _, err := l.Write(msg); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := l.Write(msg); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	// Rotated file should be uncompressed (suffix ".log", not ".log.gz/.log.zst").
+	// Give the mill a moment even though no compression should happen.
+	time.Sleep(100 * time.Millisecond)
+
+	var foundUncompressed bool
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		n := e.Name()
+		if strings.HasSuffix(n, ".log") && strings.Contains(n, "-size") {
+			foundUncompressed = true
+		}
+		if strings.HasSuffix(n, ".gz") || strings.HasSuffix(n, ".zst") {
+			t.Fatalf("unexpected compressed output present: %s", n)
+		}
+	}
+	if !foundUncompressed {
+		t.Fatalf("expected an uncompressed rotated file ending with '.log', none found in %s", dir)
 	}
 }

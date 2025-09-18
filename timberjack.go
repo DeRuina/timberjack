@@ -1,19 +1,25 @@
 // Package timberjack provides a rolling logger with size-based and time-based rotation.
 //
-// timberjack is designed to be a simple, pluggable component in a logging infrastructure.
-// It automatically handles file rotation based on configured maximum file size (MaxSize)
-// or elapsed time (RotationInterval), without requiring any external dependencies.
+// Timberjack is a simple, pluggable component for log rotation. It can rotate
+// the active log file when any of the following occur:
+//   - the file grows beyond MaxSize (size-based)
+//   - the configured RotationInterval elapses (interval-based)
+//   - a scheduled time is reached via RotateAt or RotateAtMinutes (clock-based)
+//   - rotation is triggered explicitly via Rotate() (manual)
+//
+// Rotated files can optionally be compressed with gzip or zstd.
+// Cleanup is handled automatically. Old log files are removed based on MaxBackups and MaxAge.
 //
 // Import:
 //
 //	import "github.com/DeRuina/timberjack"
 //
-// timberjack is compatible with any logging package that writes to an io.Writer,
-// including the standard library's log package.
+// Timberjack works with any logger that writes to an io.Writer, including the
+// standard library’s log package.
 //
-// timberjack assumes that only a single process is writing to the output files.
-// Using the same Logger configuration from multiple processes on the same machine
-// may result in improper behavior.
+// Concurrency note: timberjack assumes a single process writes to the target
+// files. Reusing the same Logger configuration across multiple processes on the
+// same machine may lead to improper behavior.
 //
 // Source code: https://github.com/DeRuina/timberjack
 package timberjack
@@ -35,18 +41,21 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 const (
 	backupTimeFormat = "2006-01-02T15-04-05.000"
 	compressSuffix   = ".gz"
+	zstdSuffix       = ".zst"
 	defaultMaxSize   = 100
 )
 
 // ensure we always implement io.WriteCloser
 var _ io.WriteCloser = (*Logger)(nil)
 
-// SafeClose is a generic function that safely closes a channel of any type.
+// safeClose is a generic function that safely closes a channel of any type.
 // It prevents "panic: close of closed channel" and "panic: close of nil channel".
 //
 // The type parameter [T any] allows this function to work with channels of any element type,
@@ -113,9 +122,12 @@ type Logger struct {
 	// time.
 	LocalTime bool `json:"localtime" yaml:"localtime"`
 
-	// Compress determines if the rotated log files should be compressed
-	// using gzip. The default is not to perform compression.
-	Compress bool `json:"compress" yaml:"compress"`
+	// Deprecated: use Compression instead ("none" | "gzip" | "zstd").
+	Compress bool `json:"compress,omitempty" yaml:"compress,omitempty"`
+
+	// Compression selects the algorithm. If empty, legacy Compress is used.
+	// Allowed values: "none", "gzip", "zstd". Unknown => "none" (with a warning).
+	Compression string `json:"compression,omitempty" yaml:"compression,omitempty"`
 
 	// RotationInterval is the maximum duration between log rotations.
 	// If the elapsed time since the last rotation exceeds this interval,
@@ -335,8 +347,8 @@ func (l *Logger) location() *time.Location {
 	return time.UTC
 }
 
-func parseTime(time string) (*rotateAt, error) {
-	parts := strings.Split(time, ":")
+func parseTime(s string) (*rotateAt, error) {
+	parts := strings.Split(s, ":")
 	if len(parts) != 2 {
 		return nil, errors.New("invalid time")
 	}
@@ -666,7 +678,7 @@ func (l *Logger) shouldTimeRotate() bool {
 // backupName creates a new backup filename by inserting a timestamp and a rotation reason
 // ("time" or "size") between the filename prefix and the extension.
 // It uses the local time if requested (otherwise UTC).
-func backupName(name string, local bool, reason string, t time.Time, fileTimeFormat string, AppendTimeAfterExt bool) string {
+func backupName(name string, local bool, reason string, t time.Time, fileTimeFormat string, appendTimeAfterExt bool) string {
 	dir := filepath.Dir(name)
 	filename := filepath.Base(name)
 	ext := filepath.Ext(filename)
@@ -678,7 +690,7 @@ func backupName(name string, local bool, reason string, t time.Time, fileTimeFor
 	}
 	// Format the timestamp for the backup file.
 	timestamp := t.In(currentLoc).Format(fileTimeFormat)
-	if AppendTimeAfterExt {
+	if appendTimeAfterExt {
 		// <name><ext>-<ts>-<reason>
 		// e.g. httpd.log-2025-01-01T00-00-00.000-size
 		return filepath.Join(dir, fmt.Sprintf("%s%s-%s-%s", prefix, ext, timestamp, reason))
@@ -740,7 +752,7 @@ func (l *Logger) filename() string {
 // If compression is enabled, uncompressed backups are compressed using gzip.
 // Old backup files are deleted to enforce MaxBackups and MaxAge limits.
 func (l *Logger) millRunOnce() error {
-	if l.MaxBackups == 0 && l.MaxAge == 0 && !l.Compress {
+	if l.MaxBackups == 0 && l.MaxAge == 0 && l.effectiveCompression() == "none" {
 		return nil // Nothing to do if all cleanup options are disabled.
 	}
 
@@ -810,24 +822,27 @@ func (l *Logger) millRunOnce() error {
 
 	// Compression task identification (operates on files that passed MaxBackups and MaxAge)
 	var filesToCompress []logInfo
-	if l.Compress {
+	if l.effectiveCompression() != "none" {
 		for _, f := range filesToProcess { // These are files that are meant to be kept (not in filesToRemove yet)
-			if !strings.HasSuffix(f.Name(), compressSuffix) {
-				// Ensure this file isn't ALREADY marked for removal by a previous filter
-				// (e.g. MaxBackups removed it, but it also met MaxAge criteria before this loop)
-				// This check is somewhat redundant if filesToProcess is correctly filtered,
-				// but can be a safeguard. The main finalFilesToRemove handles uniques.
-				isMarkedForFinalRemoval := false
-				for _, rmf := range filesToRemove { // Check against the accumulated remove list
-					if rmf.Name() == f.Name() {
-						isMarkedForFinalRemoval = true
-						break
-					}
-				}
-				if !isMarkedForFinalRemoval {
-					filesToCompress = append(filesToCompress, f)
+			name := f.Name()
+			if strings.HasSuffix(name, compressSuffix) || strings.HasSuffix(name, zstdSuffix) {
+				continue // already compressed
+			}
+			// Ensure this file isn't ALREADY marked for removal by a previous filter
+			// (e.g. MaxBackups removed it, but it also met MaxAge criteria before this loop)
+			// This check is somewhat redundant if filesToProcess is correctly filtered,
+			// but can be a safeguard. The main finalFilesToRemove handles uniques.
+			isMarked := false
+			for _, rmf := range filesToRemove {
+				if rmf.Name() == name {
+					isMarked = true
+					break
 				}
 			}
+			if !isMarked {
+				filesToCompress = append(filesToCompress, f)
+			}
+
 		}
 	}
 
@@ -844,10 +859,10 @@ func (l *Logger) millRunOnce() error {
 	}
 
 	// Execute compressions
+	suffix := l.compressedSuffix()
 	for _, f := range filesToCompress {
 		fn := filepath.Join(l.dir(), f.Name())
-		errCompress := compressLogFile(fn, fn+compressSuffix) // fn is source, fn+compressSuffix is dest
-		if errCompress != nil {
+		if errCompress := compressLogFile(fn, fn+suffix); errCompress != nil {
 			fmt.Fprintf(os.Stderr, "timberjack: [%s] failed to compress log file %s: %v\n", l.Filename, f.Name(), errCompress)
 		}
 	}
@@ -905,8 +920,13 @@ func (l *Logger) oldLogFiles() ([]logInfo, error) {
 			logFiles = append(logFiles, logInfo{t, info})
 			continue
 		}
-		// Attempt to parse timestamp from compressed filename (e.g., from "filename-timestamp-reason.log.gz")
+		// Attempt to parse timestamp from compressed gzip filename (e.g., from "filename-timestamp-reason.log.gz")
 		if t, errTime := l.timeFromName(name, prefix, ext+compressSuffix); errTime == nil {
+			logFiles = append(logFiles, logInfo{t, info})
+			continue
+		}
+		// Attempt to parse timestamp from compressed zstd filename (e.g., from "filename-timestamp-reason.log.zst")
+		if t, errTime := l.timeFromName(name, prefix, ext+zstdSuffix); errTime == nil {
 			logFiles = append(logFiles, logInfo{t, info})
 			continue
 		}
@@ -951,16 +971,16 @@ func (l *Logger) timeFromName(filename, prefix, ext string) (time.Time, error) {
 	// base is "<name><ext>" (e.g., "foo.log")
 	base := prefix[:len(prefix)-1] + ext
 
-	// Allow optional trailing ".gz" (compressed backups)
-	nameNoGz := strings.TrimSuffix(filename, compressSuffix)
+	// Allow optional trailing compression suffix (".gz" or ".zst")
+	nameNoComp := trimCompressionSuffix(filename)
 
-	// nameNoGz must start with "<base>-"
-	if !strings.HasPrefix(nameNoGz, base+"-") {
+	// nameNoComp must start with "<base>-"
+	if !strings.HasPrefix(nameNoComp, base+"-") {
 		return time.Time{}, fmt.Errorf("malformed backup filename: %q", filename)
 	}
 
-	// nameNoGz = "<base>-<timestamp>-<reason>"
-	trimmed := nameNoGz[len(base)+1:]
+	// nameNoComp = "<base>-<timestamp>-<reason>"
+	trimmed := nameNoComp[len(base)+1:]
 	lastHyphenIdx := strings.LastIndex(trimmed, "-")
 	if lastHyphenIdx == -1 {
 		return time.Time{}, fmt.Errorf("malformed backup filename: %q", filename)
@@ -1058,38 +1078,46 @@ func compressLogFile(src, dst string) error {
 	}
 	// No `defer dstFile.Close()` here, explicit closing in sequence is critical.
 
-	gzWriter := gzip.NewWriter(dstFile)
+	var copyErr error // To capture error from io.Copy
 
-	// Copy data from source file to gzip writer
-	if _, err = io.Copy(gzWriter, srcFile); err != nil {
-		// Error during copy. Attempt to clean up.
-		_ = gzWriter.Close() // Try to close gzip writer
-		_ = dstFile.Close()  // Try to close destination file
-		_ = osRemove(dst)    // Try to remove potentially partial destination file
-		return fmt.Errorf("failed to copy data to gzip writer for %s: %w", dst, err)
+	// Choose compression algorithm based on dst suffix
+	// Default to gzip if no recognized suffix
+	// This allows future extension to other algorithms by checking dst suffix
+	if strings.HasSuffix(dst, zstdSuffix) {
+		enc, err := zstd.NewWriter(dstFile)
+		if err != nil { // Error creating zstd writer
+			_ = dstFile.Close() // Close dstFile before removing
+			_ = osRemove(dst)   // Remove potentially partial dst file
+			return fmt.Errorf("failed to init zstd writer for %s: %v", dst, err)
+		}
+		_, copyErr = io.Copy(enc, srcFile) // Copy data from source file to zstd writer
+		closeErr := enc.Close()            // Close zstd writer to flush data
+		if copyErr == nil && closeErr != nil {
+			copyErr = closeErr
+		}
+	} else {
+		gz := gzip.NewWriter(dstFile)     // Default to gzip
+		_, copyErr = io.Copy(gz, srcFile) // Copy data from source file to gzip writer
+		closeErr := gz.Close()            // Close gzip writer to flush data
+		if copyErr == nil && closeErr != nil {
+			copyErr = closeErr
+		}
 	}
 
-	// IMPORTANT: Close the gzip.Writer first. This flushes the compressed data
-	// to the underlying writer (dstFile's OS buffer).
-	if err = gzWriter.Close(); err != nil {
+	if copyErr != nil { // Error during copy or close
 		_ = dstFile.Close() // Try to close destination file
-		_ = osRemove(dst)   // Try to remove destination file
-		return fmt.Errorf("failed to close gzip writer for %s: %w", dst, err)
+		_ = osRemove(dst)   // Try to remove potentially partial destination file
+		return fmt.Errorf("failed to write compressed data to %s: %w", dst, copyErr)
 	}
 
-	// IMPORTANT: Now, close the destination file itself. This flushes the OS buffers
-	// to disk, ensuring the file content is complete and persisted.
-	if err = dstFile.Close(); err != nil {
-		// Data is likely written and gzWriter closed successfully, but closing the file descriptor failed.
+	if err := dstFile.Close(); err != nil { // Close destination file
+		// Data is likely written and compressor closed successfully, but closing the file descriptor failed.
 		// The destination file might still be valid on disk. We typically wouldn't remove dst here
 		// as the data might be recoverable or fully written despite the close error.
 		return fmt.Errorf("failed to close destination compressed file %s: %w", dst, err)
 	}
 
-	// If all writes and file/writer closures were successful, now attempt to chown the destination file.
-	// srcInfo is the FileInfo of the original uncompressed file.
-	// The actual chown implementation is in chown.go or chown_linux.go.
-	if errChown := chown(dst, srcInfo); errChown != nil {
+	if errChown := chown(dst, srcInfo); errChown != nil { // Attempt to chown the destination file
 		// Log the chown error, but don't make it a fatal error for the compression process itself,
 		// as the compressed file is valid. The original source file will still be removed.
 		fmt.Fprintf(os.Stderr, "timberjack: [%s] failed to chown compressed log file %s: %v (source %s)\n",
@@ -1103,8 +1131,46 @@ func compressLogFile(src, dst string) error {
 		// This is a more significant error if the original isn't removed, as it might be re-processed.
 		return fmt.Errorf("failed to remove original source log file %s after compression: %w", src, err)
 	}
-
 	return nil // Compression successful
+
+}
+
+// effectiveCompression returns "none" | "gzip" | "zstd".
+// Rule: if Compression is set, it wins; if empty, fallback to legacy Compress.
+// Unknown strings default to "none" (and warn once).
+func (l *Logger) effectiveCompression() string {
+	alg := strings.ToLower(strings.TrimSpace(l.Compression))
+	switch alg {
+	case "gzip", "zstd":
+		return alg
+	case "none", "":
+		if alg == "" && l.Compress {
+			return "gzip"
+		}
+		return "none"
+	default:
+		fmt.Fprintf(os.Stderr, "timberjack: invalid compression %q — using none\n", alg)
+		return "none"
+	}
+}
+
+// compressedSuffix returns ".gz" / ".zst" or "" if none.
+func (l *Logger) compressedSuffix() string {
+	switch l.effectiveCompression() {
+	case "gzip":
+		return compressSuffix
+	case "zstd":
+		return zstdSuffix
+	default:
+		return ""
+	}
+}
+
+// trimCompressionSuffix strips one known compression suffix (".gz" or ".zst").
+func trimCompressionSuffix(name string) string {
+	name = strings.TrimSuffix(name, compressSuffix)
+	name = strings.TrimSuffix(name, zstdSuffix)
+	return name
 }
 
 // logInfo is a convenience struct to return the filename and its embedded

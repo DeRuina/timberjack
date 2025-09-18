@@ -3,7 +3,7 @@
 
 ### Timberjack is a Go package for writing logs to rolling files.
 
-Timberjack is a forked and enhanced version of [`lumberjack`](https://github.com/natefinch/lumberjack), adding features such as time-based rotation and better testability.
+Timberjack is a forked and enhanced version of [`lumberjack`](https://github.com/natefinch/lumberjack), adding time-based rotation, clock-scheduled rotation, and opt-in compression (gzip or zstd).
 Package `timberjack` provides a rolling logger with support for size-based and time-based log rotation.
 
 
@@ -20,12 +20,10 @@ go get github.com/DeRuina/timberjack
 import "github.com/DeRuina/timberjack"
 ```
 
-Timberjack is intended to be one part of a logging infrastructure. It is a pluggable
-component that manages log file writing and rotation. It plays well with any logging package that can write to an
-`io.Writer`, including the standard library's `log` package.
+Timberjack is a pluggable component that manages log file writing and rotation. It works with any logger that writes to an `io.Writer`, including the standard library’s `log` package.
 
-> ⚠️ Timberjack assumes that only one process writes to the log file. Using the same configuration from multiple
-> processes on the same machine may result in unexpected behavior.
+> ⚠️ Timberjack assumes **one process** writes to a given file. Reusing the same config from multiple
+> processes on the same machine may lead to unexpected behavior.
 
 
 ## Example
@@ -41,17 +39,17 @@ import (
 
 func main() {
 	logger := &timberjack.Logger{
-		Filename:         "/var/log/myapp/foo.log", // Choose an appropriate path
-		MaxSize:          500,                      // megabytes
-		MaxBackups:       3,                        // backups
-		MaxAge:           28,                       // days
-		Compress:         true,                     // default: false
-		LocalTime:        true,                     // default: false (use UTC)
-		RotationInterval: 24 * time.Hour,           // Rotate daily if no other rotation met
-		RotateAtMinutes:  []int{0, 15, 30, 45},     // Also rotate at HH:00, HH:15, HH:30, HH:45
+		Filename:         "/var/log/myapp/foo.log",   // Choose an appropriate path
+		MaxSize:          500,                        // megabytes
+		MaxBackups:       3,                          // backups
+		MaxAge:           28,                         // days
+    Compression:      "gzip",                     // "none" | "gzip" | "zstd" (preferred over legacy Compress)
+		LocalTime:        true,                       // default: false (use UTC)
+		RotationInterval: 24 * time.Hour,             // Rotate daily if no other rotation met
+		RotateAtMinutes:  []int{0, 15, 30, 45},       // Also rotate at HH:00, HH:15, HH:30, HH:45
 		RotateAt:         []string{"00:00", "12:00"}, // Also rotate at 00:00 and 12:00 each day
-   	BackupTimeFormat: "2006-01-02-15-04-05",    // Rotated files will have format <logfilename>-2006-01-02-15-04-05-<reason>.log
-    AppendTimeAfterExt:   true,                     // put timestamp after ".log" (foo.log-<timestamp>-<reason>)
+   	BackupTimeFormat: "2006-01-02-15-04-05",      // Rotated files will have format <logfilename>-2006-01-02-15-04-05-<reason>.log
+    AppendTimeAfterExt:   true,                    // put timestamp after ".log" (foo.log-<timestamp>-<reason>)
     
 	}
 	log.SetOutput(logger)
@@ -63,9 +61,18 @@ func main() {
 }
 ```
 
-To trigger rotation on demand (e.g. in response to `SIGHUP`):
+Manual rotation (e.g. on `SIGHUP`):
 
 ```go
+import (
+    "log"
+    "os/signal"
+    "syscall"
+
+    "github.com/DeRuina/timberjack"
+)
+
+
 l := &timberjack.Logger{}
 log.SetOutput(l)
 c := make(chan os.Signal, 1)
@@ -88,12 +95,22 @@ type Logger struct {
     MaxAge            int           // Max age (days) to retain old logs
     MaxBackups        int           // Max number of backups to keep
     LocalTime         bool          // Use local time in rotated filenames
-    Compress          bool          // Compress rotated logs (gzip)
+
+    // Compression controls post-rotation compression:
+    //   "none" | "gzip" | "zstd"
+    // Unknown/empty default to "none", unless the legacy Compress is true (see below).
+    Compression       string
+
+    // Deprecated: prefer Compression.
+    // If Compression is empty and Compress is true = gzip compression.
+    // Back-compat shim for old configs; will be removed in v2.
+    Compress          bool
+
     RotationInterval  time.Duration // Rotate after this duration (if > 0)
     RotateAtMinutes   []int         // Specific minutes within an hour (0–59) to trigger rotation
     RotateAt          []string      // Specific daily times (HH:MM, 24-hour) to trigger rotation
     BackupTimeFormat  string        // Optional. If unset or invalid, defaults to 2006-01-02T15-04-05.000 (with fallback warning)
-    AppendTimeAfterExt    bool          // if true, name backups like foo.log-<timestamp>-<reason> defaults to foo-<timestamp>-<reason>.log
+    AppendTimeAfterExt    bool      // if true, name backups like foo.log-<timestamp>-<reason> defaults to foo-<timestamp>-<reason>.log
 }
 ```
 
@@ -134,6 +151,21 @@ For example:
 /var/log/myapp/foo.log-2025-05-01T10-30-00.000-time.gz (if compressed)
 ```
 
+### Compression
+
+- Pick the algorithm with `Compression: "none" | "gzip" | "zstd"`.
+- **Precedence**: If Compression is set, it **wins**. If it’s empty, legacy `Compress: true` means gzip; else no compression.
+- Outputs use `.gz` or `.zst` suffix accordingly.
+- Compression happens after rotation in a background goroutine.
+- **Deprecation**: `Compress` is kept only for backward compatibility with old configs. It’s ignored when `Compression` is set. **It will be removed in v2**.
+
+### Cleanup
+
+On each new log file creation, timberjack:
+- Deletes backups exceeding `MaxBackups` (keeps the newest rotations).
+- Deletes backups older than `MaxAge` days.
+- Compresses uncompressed backups if compression is enabled.
+
 ### Rotation modes at a glance
 
 | Mode                           | Configure with                                | Trigger                                                             | Anchor                       | Background goroutine? | Rotates with zero writes? | Updates `lastRotationTime` | Backup suffix                                             | Notes                                                                                                             |
@@ -152,8 +184,8 @@ For example:
   The `BackupTimeFormat` value **must be valid** and must follow the timestamp layout rules
   specified here: https://pkg.go.dev/time#pkg-constants. `BackupTimeFormat` supports more formats but it's recommended to use standard formats. If an **invalid** `BackupTimeFormat` is configured, Timberjack logs a warning to `os.Stderr` and falls back to the default format: `2006-01-02T15-04-05.000`. Rotation will still work, but the resulting filenames may not match your expectations.
 
-* **Silent Ignoring of Invalid `RotateAtMinutes`/`RotateAt` Values**  
-  Values outside the valid range (`0–59`) for `RotateAtMinutes` or invalid time (`HH:MM`) for `RotateAt` or duplicates in `RotateAtMinutes`/`RotateAt` are silently ignored. No warnings or errors will be logged. This allows the program to continue safely, but the rotation behavior may not match your expectations if values are invalid.
+* **Invalid `RotateAtMinutes`/`RotateAt` Values**  
+  Values outside the valid range (`0–59`) for `RotateAtMinutes` or invalid time (`HH:MM`) for `RotateAt` or duplicates in `RotateAtMinutes`/`RotateAt` are ignored with a warning to stderr. Rotation continues with the valid schedule.
 
 * **Logger Must Be Closed**
   Always call `logger.Close()` when done logging. This shuts down internal goroutines used for scheduled rotation and cleanup. Failing to close the logger can result in orphaned background processes, open file handles, and memory leaks.
@@ -174,14 +206,6 @@ For example:
   * This means if a rotation happens due to `RotateAtMinutes`/`RotateAt`, it resets the interval timer, potentially **delaying or preventing** a `RotationInterval`-based rotation.
 
   This behavior ensures you won’t get redundant rotations, but it may make `RotationInterval` feel unpredictable if `RotateAtMinutes`/`RotateAt` is also configured.
-
-## Log Cleanup
-
-When a new log file is created:
-
-* Older backups beyond `MaxBackups` are deleted.
-* Files older than `MaxAge` days are deleted.
-* If `Compress` is true, older files are gzip-compressed.
 
 ## Contributing
 
