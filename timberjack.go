@@ -172,6 +172,7 @@ type Logger struct {
 	// true:             <name>.log-<timestamp>-<reason>
 	AppendTimeAfterExt bool `json:"appendTimeAfterExt" yaml:"appendTimeAfterExt"`
 
+
 	// Internal fields
 	size             int64     // current size of the log file
 	file             *os.File  // current log file
@@ -646,6 +647,7 @@ func (l *Logger) openNew(reasonForBackup string) error {
 		}
 
 		newname := backupName(name, l.LocalTime, reasonForBackup, rotationTimeForBackup, l.BackupTimeFormat, l.AppendTimeAfterExt)
+
 		if errRename := osRename(name, newname); errRename != nil {
 			return fmt.Errorf("can't rename log file: %s", errRename)
 		}
@@ -692,6 +694,7 @@ func (l *Logger) shouldTimeRotate() bool {
 // ("time" or "size") between the filename prefix and the extension.
 // It uses the local time if requested (otherwise UTC).
 func backupName(name string, local bool, reason string, t time.Time, fileTimeFormat string, appendTimeAfterExt bool) string {
+
 	dir := filepath.Dir(name)
 	filename := filepath.Base(name)
 	ext := filepath.Ext(filename)
@@ -703,6 +706,7 @@ func backupName(name string, local bool, reason string, t time.Time, fileTimeFor
 	}
 	// Format the timestamp for the backup file.
 	timestamp := t.In(currentLoc).Format(fileTimeFormat)
+
 	if appendTimeAfterExt {
 		// <name><ext>-<ts>-<reason>
 		// e.g. httpd.log-2025-01-01T00-00-00.000-size
@@ -963,6 +967,7 @@ func (l *Logger) timeFromName(filename, prefix, ext string) (time.Time, error) {
 	}
 
 	if !l.AppendTimeAfterExt {
+
 		// Keep legacy behavior for error messages to satisfy existing tests
 		if !strings.HasPrefix(filename, prefix) {
 			return time.Time{}, errors.New("mismatched prefix")
@@ -994,6 +999,7 @@ func (l *Logger) timeFromName(filename, prefix, ext string) (time.Time, error) {
 
 	// nameNoComp = "<base>-<timestamp>-<reason>"
 	trimmed := nameNoComp[len(base)+1:]
+
 	lastHyphenIdx := strings.LastIndex(trimmed, "-")
 	if lastHyphenIdx == -1 {
 		return time.Time{}, fmt.Errorf("malformed backup filename: %q", filename)
