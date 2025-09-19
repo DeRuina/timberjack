@@ -1,10 +1,27 @@
 # Changelog
 
+## [1.3.7](https://github.com/DeRuina/timberjack/compare/v1.3.6...v1.3.7) (2025-09-19)
+
+### Features
+
+* `zstd` compression support for rotated files ([#38](https://github.com/DeRuina/timberjack/issues/38)) ([626a5bd](https://github.com/DeRuina/timberjack/pull/43/commits/626a5bd5c4b45eab8d73b906716cf4587ca5aa64))
+
+* Manual rotate with custom reason ([#39](https://github.com/DeRuina/timberjack/issues/39)) ([cf751aa](https://github.com/DeRuina/timberjack/pull/43/commits/cf751aa14d312ecf8153234c9c57ff50ff277700))
+
+### Chnaged
+
+* Rename AppendAfterExt to AppendTimeAfterExt ([#37](https://github.com/DeRuina/timberjack/issues/37)) ([fea97b9](https://github.com/DeRuina/timberjack/pull/43/commits/fea97b9985f939a7f05df7a7f3f458c8b4ab02d9))
+
+### Deprecated
+- `Compress` (bool) is deprecated in favor of `Compression` (`"none" | "gzip" | "zstd"`).  
+  If `Compression` is set, it **wins**; if it’s empty and `Compress` is `true`, gzip is used.  
+  `Compress` will be removed in **v2**.
+
 ## [1.3.6](https://github.com/DeRuina/timberjack/compare/v1.3.5...v1.3.6) (2025-09-16)
 
 ### Features
 
-* Append the backupTimeFormat to the end of file name ([#40](https://github.com/DeRuina/timberjack/issues/37)) ([15c6d81](https://github.com/DeRuina/timberjack/commit/15c6d813214c9c7f1372af55f9b705d9d2a3a88e))
+* Append the backupTimeFormat to the end of file name ([#37](https://github.com/DeRuina/timberjack/issues/37)) ([15c6d81](https://github.com/DeRuina/timberjack/commit/15c6d813214c9c7f1372af55f9b705d9d2a3a88e))
 
 
 ## [1.3.5](https://github.com/DeRuina/timberjack/compare/v1.3.4...v1.3.5) (2025-08-19)
