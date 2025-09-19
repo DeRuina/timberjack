@@ -81,7 +81,7 @@ type rotateAt [2]int
 // Backups use the log file name given to Logger, in the form:
 // `name-timestamp-<reason>.ext` where `name` is the filename without the extension,
 // `timestamp` is the time of rotation formatted as `2006-01-02T15-04-05.000`,
-// `reason` is "size" or "time" (or "manual" for explicit Rotate calls), and `ext` is the original extension.
+// `reason` is "size" or "time" (Rotate/auto), or a custom tag (RotateWithReason), and `ext` is the original extension.
 // For example, if your Logger.Filename is `/var/log/foo/server.log`, a backup created at 6:30pm on Nov 11 2016
 // due to size would use the filename `/var/log/foo/server-2016-11-04T18-30-00.000-size.log`.
 //

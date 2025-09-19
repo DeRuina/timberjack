@@ -66,6 +66,7 @@ Manual rotation (e.g. on `SIGHUP`):
 ```go
 import (
     "log"
+    "os"
     "os/signal"
     "syscall"
 
@@ -199,6 +200,7 @@ On each new log file creation, timberjack:
 | **Manual (custom reason)**   | `Logger.RotateWithReason(s)`     | When called | Immediate | No | N/A | **No** | `-<sanitized reason>` | Falls back to `Rotate()` behavior if `s` sanitizes to empty. |
 
 > **Time zone:** scheduling and filename timestamps use UTC by default, or local time if `LocalTime: true`.
+> **Sanitized reason:** lowercase; `[a-z0-9_-]` only,  trims edge, max 32. 
 
 ## ⚠️ Rotation Notes & Warnings
 
