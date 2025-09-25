@@ -172,6 +172,10 @@ type Logger struct {
 	// true:             <name>.log-<timestamp>-<reason>
 	AppendTimeAfterExt bool `json:"appendTimeAfterExt" yaml:"appendTimeAfterExt"`
 
+	// callback function for available log files
+	// dir is the directory of the log files
+	// logFiles are the names of the finalized log files
+	Callback func(dir string, logFiles []string)
 
 	// Internal fields
 	size             int64     // current size of the log file
@@ -837,37 +841,46 @@ func (l *Logger) millRunOnce() error {
 		filesToProcess = filteredFiles // Update filesToProcess for compression filter
 	}
 
-	// Compression task identification (operates on files that passed MaxBackups and MaxAge)
-	var filesToCompress []logInfo
-	if l.effectiveCompression() != "none" {
-		for _, f := range filesToProcess { // These are files that are meant to be kept (not in filesToRemove yet)
-			name := f.Name()
-			if strings.HasSuffix(name, compressSuffix) || strings.HasSuffix(name, zstdSuffix) {
-				continue // already compressed
-			}
-			// Ensure this file isn't ALREADY marked for removal by a previous filter
-			// (e.g. MaxBackups removed it, but it also met MaxAge criteria before this loop)
-			// This check is somewhat redundant if filesToProcess is correctly filtered,
-			// but can be a safeguard. The main finalFilesToRemove handles uniques.
-			isMarked := false
-			for _, rmf := range filesToRemove {
-				if rmf.Name() == name {
-					isMarked = true
-					break
-				}
-			}
-			if !isMarked {
-				filesToCompress = append(filesToCompress, f)
-			}
+	// files for callback
+	filesForCallback := make([]string, 0, len(filesToProcess))
 
-		}
-	}
-
-	// Execute removals (ensure unique removals)
 	finalUniqueRemovals := make(map[string]logInfo)
 	for _, f := range filesToRemove {
 		finalUniqueRemovals[f.Name()] = f
 	}
+
+	toBeRemoved := func(name string) bool {
+		// Ensure this file isn't ALREADY marked for removal by a previous filter
+		// (e.g. MaxBackups removed it, but it also met MaxAge criteria before this loop)
+		// This check is somewhat redundant if filesToProcess is correctly filtered,
+		// but can be a safeguard. The main finalFilesToRemove handles uniques.
+		_, found := finalUniqueRemovals[name]
+		return found
+	}
+
+	// Compression task identification (operates on files that passed MaxBackups and MaxAge)
+	var filesToCompress []logInfo
+	if l.effectiveCompression() == "none" {
+		// compression is disabled, identify files for callback
+		for _, f := range filesToProcess {
+			if !toBeRemoved(f.Name()) {
+				filesForCallback = append(filesForCallback, f.Name())
+			}
+		}
+	} else {
+		for _, f := range filesToProcess { // These are files that are meant to be kept (not in filesToRemove yet)
+			name := f.Name()
+			if strings.HasSuffix(name, compressSuffix) || strings.HasSuffix(name, zstdSuffix) {
+				filesForCallback = append(filesForCallback, f.Name())
+				continue // already compressed
+			}
+			if !toBeRemoved(name) {
+				filesToCompress = append(filesToCompress, f)
+			}
+		}
+	}
+
+	// Execute removals (ensure unique removals)
 	for _, f := range finalUniqueRemovals {
 		errRemove := osRemove(filepath.Join(l.dir(), f.Name()))
 		if errRemove != nil && !os.IsNotExist(errRemove) { // Log error if removal failed and file wasn't already gone
@@ -879,10 +892,19 @@ func (l *Logger) millRunOnce() error {
 	suffix := l.compressedSuffix()
 	for _, f := range filesToCompress {
 		fn := filepath.Join(l.dir(), f.Name())
+		fileForCB := f.Name()
 		if errCompress := compressLogFile(fn, fn+suffix); errCompress != nil {
 			fmt.Fprintf(os.Stderr, "timberjack: [%s] failed to compress log file %s: %v\n", l.Filename, f.Name(), errCompress)
+		} else {
+			fileForCB = f.Name() + suffix
 		}
+		filesForCallback = append(filesForCallback, fileForCB)
 	}
+
+	if l.Callback != nil && len(filesForCallback) != 0 {
+		l.Callback(l.dir(), filesForCallback)
+	}
+
 	return nil
 }
 
