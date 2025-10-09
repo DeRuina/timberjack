@@ -1,0 +1,25 @@
+name: Trigger pkg.go.dev indexing
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: {}
+
+jobs:
+  poke-proxy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Go proxy for this tag
+        env:
+          MODULE_PATH: github.com/DeRuina/timberjack
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # Escape uppercase per Go module rules (DeRuina -> !de!ruina)
+          EMODULE=$(printf '%s' "$MODULE_PATH" | sed -E 's/[A-Z]/!\L&/g')
+
+          # Trigger fetch & indexing via the proxy (this is the important one)
+          curl -sSfL "https://proxy.golang.org/${EMODULE}/@v/${TAG}.info" || true
+
+          # Optional: ping checksum DB too (fine if it’s already known)
+          curl -sSfL "https://sum.golang.org/lookup/${EMODULE}@${TAG}" || true
