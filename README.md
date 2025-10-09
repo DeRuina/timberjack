@@ -43,13 +43,13 @@ func main() {
 		MaxSize:          500,                        // megabytes
 		MaxBackups:       3,                          // backups
 		MaxAge:           28,                         // days
-    Compression:      "gzip",                     // "none" | "gzip" | "zstd" (preferred over legacy Compress)
+    	Compression:      "gzip",                     // "none" | "gzip" | "zstd" (preferred over legacy Compress)
 		LocalTime:        true,                       // default: false (use UTC)
 		RotationInterval: 24 * time.Hour,             // Rotate daily if no other rotation met
 		RotateAtMinutes:  []int{0, 15, 30, 45},       // Also rotate at HH:00, HH:15, HH:30, HH:45
 		RotateAt:         []string{"00:00", "12:00"}, // Also rotate at 00:00 and 12:00 each day
-   	BackupTimeFormat: "2006-01-02-15-04-05",      // Rotated files will have format <logfilename>-2006-01-02-15-04-05-<reason>.log
-    AppendTimeAfterExt:   true,                    // put timestamp after ".log" (foo.log-<timestamp>-<reason>)
+   		BackupTimeFormat: "2006-01-02-15-04-05",      // Rotated files will have format <logfilename>-2006-01-02-15-04-05-<reason>.log
+    	AppendTimeAfterExt:   true,                    // put timestamp after ".log" (foo.log-<timestamp>-<reason>)
     
 	}
 	log.SetOutput(logger)
