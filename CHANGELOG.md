@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.3.8](https://github.com/DeRuina/timberjack/compare/v1.3.7...v1.3.8) (2025-10-15)
+
+### Fixes & Improvements
+
+* ([4c2c743](https://github.com/DeRuina/timberjack/commit/4c2c7433979b88b308dc927f10c95ee0fa221327))
+
+* Eliminated multiple data races in concurrent rotations and mill goroutines.  
+  Internal logic now snapshots configuration and system functions once for each logger instance to ensure safe concurrent use.
+
+* Added deterministic shutdown for background goroutines (`mill` and `scheduled rotation`) via `WaitGroup` synchronization, preventing premature exits or leaks.
+
+* Strengthened `Close()` to wait safely for goroutine completion without holding locks.
+
+* Improved test suite:  
+  - Fake clock (`fakeCurrentTime`) is now lock-protected to avoid race conditions.  
+  - Tests force UTC for consistent local-time behavior.  
+  - CI now runs with `go test -race` to verify concurrency safety.
+
+### Internal Changes
+
+* Introduced `resolveConfigLocked()` for snapshotting logger configuration (time, compression, stat/rename/remove functions) at initialization.
+* Simplified mill and rotation goroutine lifecycle management.
+* Minor refactoring for clarity and reduced global variable reads.
+
+
+
 ## [1.3.7](https://github.com/DeRuina/timberjack/compare/v1.3.6...v1.3.7) (2025-09-19)
 
 ### Features
