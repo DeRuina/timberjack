@@ -37,6 +37,10 @@ jobs:
         run: |
           go test  -covermode atomic -coverprofile=covprofile ./...
 
+      - name: Run Unit tests (race)
+        run: |
+          go test -race -count=1 -p 1 ./...
+
       - name: Install goveralls
         run: go install github.com/mattn/goveralls@latest
 

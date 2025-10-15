@@ -6,10 +6,51 @@ package timberjack
 import (
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
+
+type fakeFile struct {
+	uid int
+	gid int
+}
+
+type fakeFS struct {
+	mu    sync.Mutex
+	files map[string]fakeFile
+}
+
+func newFakeFS() *fakeFS {
+	return &fakeFS{files: make(map[string]fakeFile)}
+}
+
+func (fs *fakeFS) Chown(name string, uid, gid int) error {
+	fs.mu.Lock()
+	fs.files[name] = fakeFile{uid: uid, gid: gid}
+	fs.mu.Unlock()
+	return nil
+}
+
+func (fs *fakeFS) Stat(name string) (os.FileInfo, error) {
+	info, err := os.Stat(name)
+	if err != nil {
+		return nil, err
+	}
+	stat := info.Sys().(*syscall.Stat_t)
+	stat.Uid = 555
+	stat.Gid = 666
+	return info, nil
+}
+
+// accessors for tests (so they don’t read the map without lock)
+func (fs *fakeFS) Owner(name string) (uid, gid int, ok bool) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	ff, ok := fs.files[name]
+	return ff.uid, ff.gid, ok
+}
 
 func TestMaintainMode(t *testing.T) {
 	currentTime = fakeTime
@@ -56,6 +97,7 @@ func TestMaintainOwner(t *testing.T) {
 		osChown = os.Chown
 		osStat = os.Stat
 	}()
+
 	currentTime = fakeTime
 	dir := makeTempDir("TestMaintainOwner", t)
 	defer os.RemoveAll(dir)
@@ -72,6 +114,7 @@ func TestMaintainOwner(t *testing.T) {
 		MaxSize:    100, // megabytes
 	}
 	defer l.Close()
+
 	b := []byte("boo!")
 	n, err := l.Write(b)
 	isNil(err, t)
@@ -82,8 +125,12 @@ func TestMaintainOwner(t *testing.T) {
 	err = l.Rotate()
 	isNil(err, t)
 
-	equals(555, fakeFS.files[filename].uid, t)
-	equals(666, fakeFS.files[filename].gid, t)
+	uid, gid, ok := fakeFS.Owner(filename)
+	if !ok {
+		t.Fatalf("owner for %s not recorded", filename)
+	}
+	equals(555, uid, t)
+	equals(666, gid, t)
 }
 
 func TestCompressMaintainMode(t *testing.T) {
@@ -139,6 +186,7 @@ func TestCompressMaintainOwner(t *testing.T) {
 		osChown = os.Chown
 		osStat = os.Stat
 	}()
+
 	currentTime = fakeTime
 	dir := makeTempDir("TestCompressMaintainOwner", t)
 	defer os.RemoveAll(dir)
@@ -156,6 +204,7 @@ func TestCompressMaintainOwner(t *testing.T) {
 		MaxSize:    100, // megabytes
 	}
 	defer l.Close()
+
 	b := []byte("boo!")
 	n, err := l.Write(b)
 	isNil(err, t)
@@ -166,44 +215,19 @@ func TestCompressMaintainOwner(t *testing.T) {
 	err = l.Rotate()
 	isNil(err, t)
 
-	// we need to wait a little bit since the files get compressed on a different
-	// goroutine.
+	// compression happens in mill goroutine
 	<-time.After(10 * time.Millisecond)
 
-	// a compressed version of the log file should now exist with the correct
-	// owner.
+	// check owner of compressed backup
 	filename2 := backupFileWithReason(dir, "size")
-	equals(555, fakeFS.files[filename2+compressSuffix].uid, t)
-	equals(666, fakeFS.files[filename2+compressSuffix].gid, t)
-}
+	name := filename2 + compressSuffix
 
-type fakeFile struct {
-	uid int
-	gid int
-}
-
-type fakeFS struct {
-	files map[string]fakeFile
-}
-
-func newFakeFS() *fakeFS {
-	return &fakeFS{files: make(map[string]fakeFile)}
-}
-
-func (fs *fakeFS) Chown(name string, uid, gid int) error {
-	fs.files[name] = fakeFile{uid: uid, gid: gid}
-	return nil
-}
-
-func (fs *fakeFS) Stat(name string) (os.FileInfo, error) {
-	info, err := os.Stat(name)
-	if err != nil {
-		return nil, err
+	uid, gid, ok := fakeFS.Owner(name)
+	if !ok {
+		t.Fatalf("owner for %s not recorded", name)
 	}
-	stat := info.Sys().(*syscall.Stat_t)
-	stat.Uid = 555
-	stat.Gid = 666
-	return info, nil
+	equals(555, uid, t)
+	equals(666, gid, t)
 }
 
 type badFileInfo struct{}
