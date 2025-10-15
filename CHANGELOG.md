@@ -1,5 +1,37 @@
 # Changelog
 
+## [3.0.0](https://github.com/DeRuina/timberjack/compare/v2.0.1...v3.0.0) (2025-10-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* `BackupTimeFormat` field is now required for Logger instance to work. Returns error if invalid value is passed.
+
+### Features
+
+* Append the backupTimeFormat to the end of file name ([#40](https://github.com/DeRuina/timberjack/issues/40)) ([15c6d81](https://github.com/DeRuina/timberjack/commit/15c6d813214c9c7f1372af55f9b705d9d2a3a88e))
+* read group permission on newly created files ([#30](https://github.com/DeRuina/timberjack/issues/30)) ([ee44715](https://github.com/DeRuina/timberjack/commit/ee447152a04d62ae12811a2212815f8960ca0d9d))
+* release please script ([42d3575](https://github.com/DeRuina/timberjack/commit/42d35750d4f0f5cfac7c339ba9dcdee77527ab72))
+* release please script ([7514015](https://github.com/DeRuina/timberjack/commit/751401565635ff4eecbaffdf82e2333973cfe18a))
+* Rotation Suffix Time Format ([e2c2211](https://github.com/DeRuina/timberjack/commit/e2c22115ae301c034e07c703ab9729d25b170a49))
+* **rotation:** add RotateAtMinutes support ([e4c22b6](https://github.com/DeRuina/timberjack/commit/e4c22b6858ea7ca2493a1c6af4a6032f5e2ea95c))
+* **rotation:** add RotateAtMinutes support ([2e93add](https://github.com/DeRuina/timberjack/commit/2e93adddf122269e2043506a5b7a46b4106eea86))
+* **rotation:** config option for daily rotation ([#33](https://github.com/DeRuina/timberjack/issues/33)) ([16955b7](https://github.com/DeRuina/timberjack/commit/16955b7e540f9562122590ae05f591dd43cd5860))
+* use log file creation time in rotated filenames ([3d87292](https://github.com/DeRuina/timberjack/commit/3d87292ec8b528e24dc325c51a137170e49ca0f7))
+* use log file creation time in rotated filenames ([fa3bfd0](https://github.com/DeRuina/timberjack/commit/fa3bfd082947e261c003cbe1134af52428dea4dc))
+* zstd compression, RotateWithReason("") support,  ([#43](https://github.com/DeRuina/timberjack/issues/43)) ([20b71dd](https://github.com/DeRuina/timberjack/commit/20b71dd4450965b9639049961512e408ad6b0ba8))
+
+
+### Bug Fixes
+
+* bump go version to 1.21 ([9bdd903](https://github.com/DeRuina/timberjack/commit/9bdd9038638e72a7fb330fe97f8c730864b9cbd5))
+* data races ([4c2c743](https://github.com/DeRuina/timberjack/commit/4c2c7433979b88b308dc927f10c95ee0fa221327))
+* Fix formatting of log configuration options in README ([d46cd01](https://github.com/DeRuina/timberjack/commit/d46cd01b7125bbe24147a3ac34ad56e49453e933))
+* millRun goroutine leak fix ([28bf784](https://github.com/DeRuina/timberjack/commit/28bf784b830e5f839054f7d82950087e323b958f))
+* Prevent panic on write after close and improve shutdown robustness ([#25](https://github.com/DeRuina/timberjack/issues/25)) ([332b9c2](https://github.com/DeRuina/timberjack/commit/332b9c2553d63f5eafdce47237d29b510609f823))
+* test release flow from v1.3.1 ([bef4fe1](https://github.com/DeRuina/timberjack/commit/bef4fe1e31bc8a3099e8fc94605ebf345b5c8b52))
+* truncateFractional bug fix ([9a6f908](https://github.com/DeRuina/timberjack/commit/9a6f908d270ddfa45df66621b0b12b1ff44ab28f))
+
 ## [1.3.7](https://github.com/DeRuina/timberjack/compare/v1.3.6...v1.3.7) (2025-09-19)
 
 ### Features
