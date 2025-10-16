@@ -13,7 +13,6 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: "scope"
-    versioning-strategy: "increase"
     groups:
       go-minor-and-patch:
         applies-to: version-updates
