@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # Go modules (go.mod/go.sum at repo root)
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Helsinki"
+    open-pull-requests-limit: 10
+    labels: ["deps", "go"]
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    versioning-strategy: "increase"
+    groups:
+      go-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions used in .github/workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:30"
+      timezone: "Europe/Helsinki"
+    open-pull-requests-limit: 5
+    labels: ["deps", "ci"]
+    commit-message:
+      prefix: "ci(deps)"
