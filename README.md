@@ -39,18 +39,18 @@ import (
 
 func main() {
 	logger := &timberjack.Logger{
-		Filename:         "/var/log/myapp/foo.log",   // Choose an appropriate path
-		MaxSize:          500,                        // megabytes
-		MaxBackups:       3,                          // backups
-		MaxAge:           28,                         // days
-    	Compression:      "gzip",                     // "none" | "gzip" | "zstd" (preferred over legacy Compress)
-		LocalTime:        true,                       // default: false (use UTC)
-		RotationInterval: 24 * time.Hour,             // Rotate daily if no other rotation met
-		RotateAtMinutes:  []int{0, 15, 30, 45},       // Also rotate at HH:00, HH:15, HH:30, HH:45
-		RotateAt:         []string{"00:00", "12:00"}, // Also rotate at 00:00 and 12:00 each day
-   		BackupTimeFormat: "2006-01-02-15-04-05",      // Rotated files will have format <logfilename>-2006-01-02-15-04-05-<reason>.log
-    	AppendTimeAfterExt:   true,                    // put timestamp after ".log" (foo.log-<timestamp>-<reason>)
-    
+        Filename:          "/var/log/myapp/foo.log",    // Choose an appropriate path
+        MaxSize:            500,                        // megabytes
+        MaxBackups:         3,                          // backups
+        MaxAge:             28,                         // days
+        Compression:        "gzip",                     // "none" | "gzip" | "zstd" (preferred over legacy Compress)
+        LocalTime:          true,                       // default: false (use UTC)
+        RotationInterval:   24 * time.Hour,             // Rotate daily if no other rotation met
+        RotateAtMinutes:    []int{0, 15, 30, 45},       // Also rotate at HH:00, HH:15, HH:30, HH:45
+        RotateAt:           []string{"00:00", "12:00"}, // Also rotate at 00:00 and 12:00 each day
+        BackupTimeFormat:   "2006-01-02-15-04-05",      // Rotated files will have format <logfilename>-2006-01-02-15-04-05-<reason>.log
+        AppendTimeAfterExt: true,                       // put timestamp after ".log" (foo.log-<timestamp>-<reason>)
+        FileMode:           0o644,                      // Custom permissions for newly created files. If unset or 0, defaults to 640.
 	}
 	log.SetOutput(logger)
 	defer logger.Close() // Ensure logger is closed on application exit to stop goroutines
@@ -124,6 +124,7 @@ type Logger struct {
     RotateAt          []string      // Specific daily times (HH:MM, 24-hour) to trigger rotation
     BackupTimeFormat  string        // Optional. If unset or invalid, defaults to 2006-01-02T15-04-05.000 (with fallback warning)
     AppendTimeAfterExt    bool      // if true, name backups like foo.log-<timestamp>-<reason> defaults to foo-<timestamp>-<reason>.log
+    FileMode          os.FileMode   // Use custom permissions for newly created files. If zero (unset or 0), defaults to 640.
 }
 ```
 

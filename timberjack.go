@@ -50,6 +50,7 @@ const (
 	compressSuffix   = ".gz"
 	zstdSuffix       = ".zst"
 	defaultMaxSize   = 100
+	defaultFileMode  = 0o640
 )
 
 // ensure we always implement io.WriteCloser
@@ -172,6 +173,14 @@ type Logger struct {
 	// true:             <name>.log-<timestamp>-<reason>
 	AppendTimeAfterExt bool `json:"appendTimeAfterExt" yaml:"appendTimeAfterExt"`
 
+	// FileMode sets the permissions to use when creating new log files.
+	// It will be inherited by rotated files.
+	// If zero, the default of 0o640 is used.
+	//
+	// Note that a local umask may alter the final permissions.
+	// Also, on non-Linux systems this might not have the desired effect.
+	FileMode os.FileMode `json:"filemode" yaml:"filemode"`
+
 	// Internal fields
 	size                   int64     // current size of the log file
 	file                   *os.File  // current log file
@@ -271,7 +280,7 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 		// The logger is closed. To ensure the write succeeds, we perform a
 		// single open-write-close cycle. This does not perform rotation
 		// and does not restart the background goroutines. l.file remains nil.
-		file, openErr := os.OpenFile(l.filename(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		file, openErr := os.OpenFile(l.filename(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if openErr != nil {
 			return 0, fmt.Errorf("timberjack: write on closed logger failed to open file: %w", openErr)
 		}
@@ -357,12 +366,11 @@ func (l *Logger) ValidateBackupTimeFormat() error {
 		return ErrEmptyBackupTimeFormatField
 	}
 	// 2025-05-22 23:41:59.987654321 +0000 UTC
-	now := time.Date(2025, 05, 22, 23, 41, 59, 987_654_321, time.UTC)
+	now := time.Date(2025, 5, 22, 23, 41, 59, 987_654_321, time.UTC)
 
 	layoutPrecision := countDigitsAfterDot(l.BackupTimeFormat)
 
 	now, err := truncateFractional(now, layoutPrecision)
-
 	if err != nil {
 		return err
 	}
@@ -694,14 +702,18 @@ func backupNameWithResolved(name string, local bool, reason string, t time.Time,
 func (l *Logger) openNew(reasonForBackup string) error {
 	l.resolveConfigLocked() // no-op after first time
 
-	if err := os.MkdirAll(l.dir(), 0755); err != nil {
+	if err := os.MkdirAll(l.dir(), 0o755); err != nil {
 		return fmt.Errorf("can't make directories for new logfile: %s", err)
 	}
 
 	name := l.filename()
-	finalMode := os.FileMode(0640)
-	var oldInfo os.FileInfo
 
+	finalMode := l.FileMode
+	if finalMode == 0 {
+		finalMode = os.FileMode(defaultFileMode)
+	}
+
+	var oldInfo os.FileInfo
 	info, err := l.resolvedStat(name)
 	if err == nil {
 		oldInfo = info
@@ -767,7 +779,6 @@ func (l *Logger) shouldTimeRotate() bool {
 // ("time" or "size") between the filename prefix and the extension.
 // It uses the local time if requested (otherwise UTC).
 func backupName(name string, local bool, reason string, t time.Time, fileTimeFormat string, appendTimeAfterExt bool) string {
-
 	dir := filepath.Dir(name)
 	filename := filepath.Base(name)
 	ext := filepath.Ext(filename)
@@ -816,7 +827,7 @@ func (l *Logger) openExistingOrNew(writeLen int) error {
 	}
 
 	// Open existing file for appending.
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644) // Mode 0644 is common for append.
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		// If opening existing fails (e.g., permissions, corruption), try to create a new one.
 		return l.openNew("initial") // Fallback if append fails
@@ -856,7 +867,7 @@ func (l *Logger) millRunOnce() error {
 		return err
 	}
 
-	var filesToProcess = files  // Start with all found old log files
+	filesToProcess := files     // Start with all found old log files
 	var filesToRemove []logInfo // Accumulates files to be deleted
 
 	// MaxBackups filtering: Keep files belonging to the MaxBackups newest distinct timestamps
@@ -1231,7 +1242,6 @@ func (l *Logger) compressLogFile(src, dst string) error {
 		return fmt.Errorf("failed to remove original source log file %s after compression: %w", src, err)
 	}
 	return nil // Compression successful
-
 }
 
 // effectiveCompression returns "none" | "gzip" | "zstd".
