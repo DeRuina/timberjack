@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.9](https://github.com/DeRuina/timberjack/compare/v1.3.8...v1.3.9) (2025-10-21)
+
+### Features
+
+*  Make FileMode for newly created files configurable ([#59](https://github.com/DeRuina/timberjack/pull/59)) ([82320e6](https://github.com/DeRuina/timberjack/commit/82320e6d10084bf4cb32a80ced28175f66d15214))
+
+
 ## [1.3.8](https://github.com/DeRuina/timberjack/compare/v1.3.7...v1.3.8) (2025-10-15)
 
 ### Fixes & Improvements
