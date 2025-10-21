@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -82,7 +83,7 @@ func TestOpenExisting(t *testing.T) {
 
 	filename := logFile(dir)
 	data := []byte("foo!")
-	err := os.WriteFile(filename, data, 0644)
+	err := os.WriteFile(filename, data, 0o644)
 	isNil(err, t)
 	existsWithContent(filename, data, t)
 
@@ -97,6 +98,9 @@ func TestOpenExisting(t *testing.T) {
 
 	// make sure the file got appended
 	existsWithContent(filename, append(data, b...), t)
+
+	// make sure permissions are retained
+	hasPerm(filename, 0o644, t)
 
 	// make sure no other files were created
 	fileCount(dir, 1, t)
@@ -207,7 +211,7 @@ func TestFirstWriteRotate(t *testing.T) {
 	defer l.Close()
 
 	start := []byte("boooooo!")
-	err := os.WriteFile(filename, start, 0600)
+	err := os.WriteFile(filename, start, 0o600)
 	isNil(err, t)
 
 	newFakeTime()
@@ -296,13 +300,13 @@ func TestMaxBackups(t *testing.T) {
 	// create a file that is close to but different from the logfile name.
 	// It shouldn't get caught by our deletion filters.
 	notlogfile := logFile(dir) + ".foo"
-	err = os.WriteFile(notlogfile, []byte("data"), 0644)
+	err = os.WriteFile(notlogfile, []byte("data"), 0o644)
 	isNil(err, t)
 
 	// Make a directory that exactly matches our log file filters... it still
 	// shouldn't get caught by the deletion filter since it's a directory.
 	notlogfiledir := backupFileWithReason(dir, "size")
-	err = os.Mkdir(notlogfiledir, 0700)
+	err = os.Mkdir(notlogfiledir, 0o700)
 	isNil(err, t)
 
 	newFakeTime()
@@ -314,7 +318,7 @@ func TestMaxBackups(t *testing.T) {
 	// not be counted since both the compressed and the uncompressed
 	// log files still exist.
 	compLogFile := fourthFilename + compressSuffix
-	err = os.WriteFile(compLogFile, []byte("compress"), 0644)
+	err = os.WriteFile(compLogFile, []byte("compress"), 0o644)
 	isNil(err, t)
 
 	// this will make us rotate again
@@ -363,24 +367,24 @@ func TestCleanupExistingBackups(t *testing.T) {
 
 	data := []byte("data")
 	backup := backupFileWithReason(dir, "size")
-	err := os.WriteFile(backup, data, 0644)
+	err := os.WriteFile(backup, data, 0o644)
 	isNil(err, t)
 
 	newFakeTime()
 
 	backup = backupFileWithReason(dir, "size")
-	err = os.WriteFile(backup+compressSuffix, data, 0644)
+	err = os.WriteFile(backup+compressSuffix, data, 0o644)
 	isNil(err, t)
 
 	newFakeTime()
 
 	backup = backupFileWithReason(dir, "size")
-	err = os.WriteFile(backup, data, 0644)
+	err = os.WriteFile(backup, data, 0o644)
 	isNil(err, t)
 
 	// now create a primary log file with some data
 	filename := logFile(dir)
-	err = os.WriteFile(filename, data, 0644)
+	err = os.WriteFile(filename, data, 0o644)
 	isNil(err, t)
 
 	l := &Logger{
@@ -481,7 +485,7 @@ func TestOldLogFiles(t *testing.T) {
 
 	filename := logFile(dir)
 	data := []byte("data")
-	err := os.WriteFile(filename, data, 07)
+	err := os.WriteFile(filename, data, 0o7)
 	isNil(err, t)
 
 	// This gives us a time with the same precision as the time we get from the
@@ -490,7 +494,7 @@ func TestOldLogFiles(t *testing.T) {
 	isNil(err, t)
 
 	backup := backupFileWithReason(dir, "size")
-	err = os.WriteFile(backup, data, 07)
+	err = os.WriteFile(backup, data, 0o7)
 	isNil(err, t)
 
 	newFakeTime()
@@ -499,7 +503,7 @@ func TestOldLogFiles(t *testing.T) {
 	isNil(err, t)
 
 	backup2 := backupFileWithReason(dir, "size")
-	err = os.WriteFile(backup2, data, 07)
+	err = os.WriteFile(backup2, data, 0o7)
 	isNil(err, t)
 
 	l := &Logger{Filename: filename}
@@ -687,9 +691,9 @@ func TestCompressOnResume(t *testing.T) {
 	// Create a backup file and empty "compressed" file.
 	filename2 := backupFileWithReason(dir, "size")
 	b := []byte("foo!")
-	err := os.WriteFile(filename2, b, 0644)
+	err := os.WriteFile(filename2, b, 0o644)
 	isNil(err, t)
-	err = os.WriteFile(filename2+compressSuffix, []byte{}, 0644)
+	err = os.WriteFile(filename2+compressSuffix, []byte{}, 0o644)
 	isNil(err, t)
 
 	newFakeTime()
@@ -746,7 +750,7 @@ func TestJson(t *testing.T) {
 func makeTempDir(name string, t testing.TB) string {
 	dir := time.Now().Format(name + backupTimeFormat)
 	dir = filepath.Join(os.TempDir(), dir)
-	isNilUp(os.Mkdir(dir, 0700), t, 1)
+	isNilUp(os.Mkdir(dir, 0o700), t, 1)
 	return dir
 }
 
@@ -759,6 +763,12 @@ func existsWithContent(path string, content []byte, t testing.TB) {
 	b, err := os.ReadFile(path)
 	isNilUp(err, t, 1)
 	equalsUp(content, b, t, 1)
+}
+
+func hasPerm(path string, perm os.FileMode, t testing.TB) {
+	info, err := os.Stat(path)
+	isNilUp(err, t, 1)
+	assertUp(info.Mode().Perm() == perm, t, 1, "expected file permissions %#o, but got %#o", perm, info.Mode().Perm())
 }
 
 // logFile returns the log file name in the given directory for the current fake
@@ -996,7 +1006,7 @@ func TestRotateAt(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// 4) Write at 10:01 → should be on a fresh file, and first-backup is content1
-	setFakeTime(time.Date(2025, time.May, 13, 10, 01, 0, 0, time.UTC))
+	setFakeTime(time.Date(2025, time.May, 13, 10, 1, 0, 0, time.UTC))
 	n, err = l.Write(content2)
 	isNil(err, t)
 	equals(len(content2), n, t)
@@ -1006,7 +1016,7 @@ func TestRotateAt(t *testing.T) {
 	fileCount(dir, 2, t)
 
 	// 5) Advance past the next day 10:00 mark without writing → no new rotation
-	setFakeTime(time.Date(2025, time.May, 14, 10, 01, 0, 0, time.UTC))
+	setFakeTime(time.Date(2025, time.May, 14, 10, 1, 0, 0, time.UTC))
 	time.Sleep(300 * time.Millisecond)
 	fileCount(dir, 2, t) // still just the live log + one backup
 
@@ -1062,7 +1072,7 @@ type dummyFileInfo struct {
 
 func (d dummyFileInfo) Name() string       { return d.name }
 func (d dummyFileInfo) Size() int64        { return 0 }
-func (d dummyFileInfo) Mode() os.FileMode  { return 0644 }
+func (d dummyFileInfo) Mode() os.FileMode  { return 0o644 }
 func (d dummyFileInfo) ModTime() time.Time { return time.Now() }
 func (d dummyFileInfo) IsDir() bool        { return false }
 func (d dummyFileInfo) Sys() interface{}   { return nil }
@@ -1085,7 +1095,7 @@ func TestOpenExistingOrNew_Fallback(t *testing.T) {
 	}
 
 	// Create a file with 0 perms so append will fail
-	_ = os.WriteFile(logger.Filename, []byte("data"), 0000)
+	_ = os.WriteFile(logger.Filename, []byte("data"), 0o000)
 
 	err := logger.openExistingOrNew(1)
 	if err != nil {
@@ -1101,7 +1111,7 @@ func TestOpenExistingOrNew_Fallback(t *testing.T) {
 func TestMillRunOnce_OldFilesRemoved(t *testing.T) {
 	dir := t.TempDir()
 	oldLog := filepath.Join(dir, "test-2000-01-01T00-00-00.000-size.log")
-	_ = os.WriteFile(oldLog, []byte("data"), 0644)
+	_ = os.WriteFile(oldLog, []byte("data"), 0o644)
 
 	logger := &Logger{
 		Filename:   filepath.Join(dir, "test.log"),
@@ -1301,7 +1311,7 @@ func TestCompressLogFile_ChownFails(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "to-compress.log")
 	dst := src + ".gz"
-	_ = os.WriteFile(src, []byte("dummy"), 0644)
+	_ = os.WriteFile(src, []byte("dummy"), 0o644)
 
 	originalChown := chown
 	chown = func(_ string, _ os.FileInfo) error {
@@ -1325,7 +1335,7 @@ func TestCompressLogFile_ChownFails(t *testing.T) {
 func TestOpenNew_RenameFails(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "test.log")
-	_ = os.WriteFile(file, []byte("original"), 0644)
+	_ = os.WriteFile(file, []byte("original"), 0o644)
 
 	// Fix timestamp so backupName is predictable
 	currentTime = func() time.Time {
@@ -1351,7 +1361,7 @@ func TestCompressLogFile_StatFails(t *testing.T) {
 	src := filepath.Join(dir, "bad.log")
 	dst := src + ".gz"
 
-	_ = os.WriteFile(src, []byte("dummy"), 0644)
+	_ = os.WriteFile(src, []byte("dummy"), 0o644)
 	_ = os.Remove(src)
 
 	l := &Logger{}
@@ -1401,10 +1411,10 @@ func TestCompressLogFile_CopyFails(t *testing.T) {
 	src := filepath.Join(dir, "bad.log")
 	dst := src + ".gz"
 
-	if err := os.WriteFile(src, []byte("data"), 0200); err != nil { // write-only
+	if err := os.WriteFile(src, []byte("data"), 0o200); err != nil { // write-only
 		t.Fatalf("failed to create test file: %v", err)
 	}
-	defer os.Chmod(src, 0644)
+	defer os.Chmod(src, 0o644)
 
 	originalStat := osStat
 	osStat = func(name string) (os.FileInfo, error) {
@@ -1443,7 +1453,7 @@ func TestOpenNew_OpenFileFails(t *testing.T) {
 
 	// Create a file where a directory is expected
 	fileAsDir := filepath.Join(tmpDir, "not_a_dir")
-	err := os.WriteFile(fileAsDir, []byte("I am a file, not a dir"), 0644)
+	err := os.WriteFile(fileAsDir, []byte("I am a file, not a dir"), 0o644)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -1529,7 +1539,7 @@ func TestWrite_IntervalRotateFails(t *testing.T) {
 	logfile := filepath.Join(tmp, "fail.log")
 
 	// Write some initial file content
-	err := os.WriteFile(logfile, []byte("existing"), 0644)
+	err := os.WriteFile(logfile, []byte("existing"), 0o644)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -1565,7 +1575,7 @@ func TestWrite_SizeRotateFails(t *testing.T) {
 	logfile := filepath.Join(tmp, "sizefail.log")
 
 	// Create initial file with some content (5 bytes)
-	err := os.WriteFile(logfile, []byte("12345"), 0644)
+	err := os.WriteFile(logfile, []byte("12345"), 0o644)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -1590,7 +1600,7 @@ func TestCompressLogFile_StatFails_1(t *testing.T) {
 	src := filepath.Join(tmp, "test.log")
 	dst := src + ".gz"
 
-	if err := os.WriteFile(src, []byte("log content"), 0644); err != nil {
+	if err := os.WriteFile(src, []byte("log content"), 0o644); err != nil {
 		t.Fatalf("failed to create source log: %v", err)
 	}
 
@@ -1614,13 +1624,13 @@ func TestCompressLogFile_OpenDestFails(t *testing.T) {
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "log.log")
 
-	err := os.WriteFile(src, []byte("hello"), 0644)
+	err := os.WriteFile(src, []byte("hello"), 0o644)
 	if err != nil {
 		t.Fatalf("failed to write source: %v", err)
 	}
 
 	fileAsDir := filepath.Join(tmp, "not_a_dir")
-	err = os.WriteFile(fileAsDir, []byte("conflict"), 0644)
+	err = os.WriteFile(fileAsDir, []byte("conflict"), 0o644)
 	if err != nil {
 		t.Fatalf("failed to create conflict path: %v", err)
 	}
@@ -1648,7 +1658,7 @@ func TestCompressLogFile_CopyFails_1(t *testing.T) {
 	dst := filepath.Join(tmp, "output.gz")
 
 	// Write dummy source
-	err := os.WriteFile(src, []byte("irrelevant"), 0644)
+	err := os.WriteFile(src, []byte("irrelevant"), 0o644)
 	if err != nil {
 		t.Fatalf("failed to create dummy file: %v", err)
 	}
@@ -1688,7 +1698,7 @@ func TestCompressLogFile_GzipCloseFails_Simulated(t *testing.T) {
 	dst := filepath.Join(tmp, "dst.gz")
 
 	// Write some dummy content
-	err := os.WriteFile(src, []byte("data to compress"), 0644)
+	err := os.WriteFile(src, []byte("data to compress"), 0o644)
 	if err != nil {
 		t.Fatalf("failed to write src: %v", err)
 	}
@@ -1725,7 +1735,7 @@ func TestCompressLogFile_RemoveFails(t *testing.T) {
 	src := filepath.Join(tmp, "locked.log")
 	dst := src + ".gz"
 
-	if err := os.WriteFile(src, []byte("test log"), 0644); err != nil {
+	if err := os.WriteFile(src, []byte("test log"), 0o644); err != nil {
 		t.Fatalf("failed to create source file: %v", err)
 	}
 
@@ -1855,7 +1865,7 @@ func TestMillRunOnce_CompressEligible(t *testing.T) {
 	// Create a non-compressed log file with a valid timestamp in name
 	backupName := "test-2025-01-01T00-00-00.000-size.log"
 	path := filepath.Join(tmp, backupName)
-	if err := os.WriteFile(path, []byte("log"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("log"), 0o644); err != nil {
 		t.Fatalf("failed to create backup log: %v", err)
 	}
 	defer os.Remove(path)
@@ -1888,7 +1898,7 @@ func TestMillRunOnce_ExpiredFileSkipped(t *testing.T) {
 	oldName := "logfile-2020-01-01T00-00-00.000-size.log"
 	oldPath := filepath.Join(tmp, oldName)
 
-	if err := os.WriteFile(oldPath, []byte("expired"), 0644); err != nil {
+	if err := os.WriteFile(oldPath, []byte("expired"), 0o644); err != nil {
 		t.Fatalf("failed to create old log file: %v", err)
 	}
 	defer os.Remove(oldPath)
@@ -1909,7 +1919,7 @@ func TestMillRun_TriggersMillRunOnce_Effect(t *testing.T) {
 
 	// Create a backup log file that should be compressed
 	backup := filepath.Join(tmp, "log-2020-01-01T00-00-00.000-size.log")
-	if err := os.WriteFile(backup, []byte("backup data"), 0644); err != nil {
+	if err := os.WriteFile(backup, []byte("backup data"), 0o644); err != nil {
 		t.Fatalf("failed to create backup: %v", err)
 	}
 
@@ -1954,7 +1964,7 @@ func TestRotate_StartMillOnlyOnce_Observable(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		name := fmt.Sprintf("logfile-2020-01-01T00-00-0%d.000-size.log", i)
 		path := filepath.Join(tmp, name)
-		if err := os.WriteFile(path, []byte("to compress"), 0644); err != nil {
+		if err := os.WriteFile(path, []byte("to compress"), 0o644); err != nil {
 			t.Fatalf("failed to write %s: %v", path, err)
 		}
 		defer os.Remove(path + ".gz")
@@ -2029,7 +2039,7 @@ func TestCompressLogFile_CloseDestFails(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "log.log")
 	dst := src + ".gz"
-	_ = os.WriteFile(src, []byte("dummy"), 0644)
+	_ = os.WriteFile(src, []byte("dummy"), 0o644)
 
 	// Patch osStat to return valid info
 	originalStat := osStat
@@ -2092,7 +2102,7 @@ func TestScheduledRotation_TimerFiresAndRotates(t *testing.T) {
 func TestMillRunOnce_RemoveFails(t *testing.T) {
 	tmp := t.TempDir()
 	logFile := filepath.Join(tmp, "log-2025-01-01T00-00-00.000-size.log")
-	_ = os.WriteFile(logFile, []byte("data"), 0644)
+	_ = os.WriteFile(logFile, []byte("data"), 0o644)
 
 	origRemove := osRemove
 	osRemove = func(path string) error {
@@ -2114,7 +2124,7 @@ func TestMillRunOnce_RemoveFails(t *testing.T) {
 func TestCompressLogFile_CopyFails_2(t *testing.T) {
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "broken.log")
-	_ = os.WriteFile(src, []byte("data"), 0644)
+	_ = os.WriteFile(src, []byte("data"), 0o644)
 
 	// Simulate failure by removing source before compression
 	os.Remove(src)
@@ -2170,7 +2180,7 @@ func TestRunScheduledRotations_TimerFires(t *testing.T) {
 func TestCompressLogFile_CopyFails_4(t *testing.T) {
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "unreadable.log")
-	_ = os.WriteFile(src, []byte("something"), 0600)
+	_ = os.WriteFile(src, []byte("something"), 0o600)
 	_ = os.Remove(src) // remove so Open will fail
 
 	dst := filepath.Join(tmp, "unreadable.log.gz")
@@ -2182,6 +2192,7 @@ func TestCompressLogFile_CopyFails_4(t *testing.T) {
 		t.Fatalf("expected source open error, got: %v", err)
 	}
 }
+
 func TestWrite_SizeRotateFails_4(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "fail-size.log")
@@ -2192,7 +2203,7 @@ func TestWrite_SizeRotateFails_4(t *testing.T) {
 	}
 
 	// Write almost max-size file manually
-	_ = os.WriteFile(logPath, bytes.Repeat([]byte("x"), int(logger.max()-1)), 0644)
+	_ = os.WriteFile(logPath, bytes.Repeat([]byte("x"), int(logger.max()-1)), 0o644)
 
 	// Don't preopen file — force logger to call openExistingOrNew → openNew → osRename
 	logger.file = nil
@@ -2228,7 +2239,7 @@ func TestWrite_IntervalRotationFails(t *testing.T) {
 	logfile := filepath.Join(tmp, "fail.log")
 
 	// Seed file to trigger openExisting
-	_ = os.WriteFile(logfile, []byte("seed"), 0644)
+	_ = os.WriteFile(logfile, []byte("seed"), 0o644)
 
 	logger := &Logger{
 		Filename:         logfile,
@@ -2289,7 +2300,7 @@ func TestRotate_ManualTriggersTimeRotation(t *testing.T) {
 	filename := filepath.Join(dir, "manual-trigger.log")
 
 	// Seed file to ensure it rotates
-	_ = os.WriteFile(filename, []byte("before"), 0644)
+	_ = os.WriteFile(filename, []byte("before"), 0o644)
 
 	l := &Logger{
 		Filename:         filename,
@@ -2340,7 +2351,7 @@ func TestRunScheduledRotations_FallbackOnRotateFailure(t *testing.T) {
 
 	dir := t.TempDir()
 	logFile := filepath.Join(dir, "fallback.log")
-	_ = os.WriteFile(logFile, []byte("seed"), 0644)
+	_ = os.WriteFile(logFile, []byte("seed"), 0o644)
 
 	l := &Logger{Filename: logFile}
 	// snapshot the patched globals for openNew() etc.
@@ -2605,7 +2616,6 @@ func TestWriteToClosedLogger(t *testing.T) {
 
 	// 3. Action: Write to the now-closed logger
 	n, err = logger.Write(writeAfterCloseContent)
-
 	// 4. Verification
 	if err != nil {
 		t.Fatalf("Write after close should not return an error, but got: %v", err)
@@ -2631,29 +2641,67 @@ func TestWriteToClosedLogger(t *testing.T) {
 	}
 }
 
-func TestOpenNewWithProperPermissions(t *testing.T) {
+func TestOpenNewDefaultPerm(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("Skipping permission test on Windows")
+		t.Skip("Skipping default perm test on Windows")
 	}
 
-	dir := t.TempDir()
-	file := filepath.Join(dir, "test.log")
-	l := &Logger{Filename: file}
+	// Ensure no bits get masked out.
+	syscall.Umask(0o000)
 
-	err := l.openNew("size")
-	if err != nil {
-		t.Fatalf("openNew failed: %v", err)
+	dir := makeTempDir("TestOpenNewDefaultPerm", t)
+	defer os.RemoveAll(dir)
+
+	l := &Logger{
+		Filename: logFile(dir),
+	}
+	defer l.Close()
+
+	_, err := l.Write([]byte("foo"))
+	isNil(err, t)
+	hasPerm(logFile(dir), 0o640, t)
+}
+
+func TestOpenNewCustomPerm(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping custom perm test on Windows")
 	}
 
-	stat, err := os.Stat(file)
-	if err != nil {
-		t.Fatalf("failed to stat file: %v", err)
-	}
+	// Ensure no bits get masked out.
+	syscall.Umask(0o000)
 
-	if stat.Mode().Perm() != 0640 {
-		pr := fmt.Sprintf("%o", stat.Mode().Perm())
-		t.Errorf("file permissions should be 0640, got: %s", pr)
+	dir := makeTempDir("TestOpenNewCustomPerm", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir)
+	l := &Logger{
+		Filename: filename,
+		FileMode: 0o747,
 	}
+	_, err := l.Write([]byte("foo"))
+	isNil(err, t)
+	hasPerm(filename, 0o747, t)
+	l.Close()
+
+	filename += ".1"
+	l = &Logger{
+		Filename: filename,
+		FileMode: 0o200,
+	}
+	_, err = l.Write([]byte("foo"))
+	isNil(err, t)
+	hasPerm(filename, 0o200, t)
+	l.Close()
+
+	filename += ".2"
+	l = &Logger{
+		Filename: filename,
+		FileMode: 0o666,
+	}
+	_, err = l.Write([]byte("foo"))
+	isNil(err, t)
+	hasPerm(filename, 0o666, t)
+	l.Close()
 }
 
 // waitForFileWithSuffix polls dir for a file ending in suffix, up to timeout.
@@ -2730,6 +2778,7 @@ func TestZstdCompression_SizeRotate_DefaultNaming(t *testing.T) {
 		t.Fatalf("zstd content mismatch: got %q want %q", string(got), string(msg))
 	}
 }
+
 func TestZstdCompression_SizeRotate_AppendAfterExt(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "service.log")
