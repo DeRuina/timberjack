@@ -1236,6 +1236,16 @@ func (l *Logger) compressLogFile(src, dst string) error {
 		// For now, it's logged, and compression proceeds to remove the source.
 	}
 
+	// Windows file locking fix
+	// Close the source file explicitly BEFORE attempting to remove it.
+	// On Windows, you cannot delete an open file. The defer srcFile.Close() won't execute
+	// until this function returns, so we must close it here before calling resolvedRemove().
+	// This prevents "The process cannot access the file because it is being used" errors.
+	if err := srcFile.Close(); err != nil {
+		// Log the close error but continue with removal attempt
+		fmt.Fprintf(os.Stderr, "timberjack: [%s] failed to close source file before removal: %v\n", filepath.Base(src), err)
+	}
+
 	// Finally, after successful compression and closing (and optional chown), remove the original source file.
 	if err = l.resolvedRemove(src); err != nil {
 		// This is a more significant error if the original isn't removed, as it might be re-processed.
