@@ -21,3 +21,4 @@ _testmain.go
 
 *.exe
 *.test
+test-mill.log

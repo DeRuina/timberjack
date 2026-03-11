@@ -3065,3 +3065,90 @@ func TestRotateWithReason_EmptyFallsBackToSizeWhenNotDue(t *testing.T) {
 		t.Fatalf("expected a rotated file with '-size.log' suffix when interval is not due")
 	}
 }
+
+// TestRotateNoDoubleBackupOnScheduledMark verifies that manually calling
+// Rotate() or RotateWithReason() after a scheduled RotateAt mark has been
+// crossed does NOT produce a second backup file when the next Write() occurs.
+//
+// Regression test for the bug reported in the DeRuina/timberjack Discussions:
+// "Potential bug regarding RotateWithReason() and Rotate()".
+// Steps:
+//  1. Write a log entry on Jan 27.
+//  2. Advance the clock past midnight (to Jan 28 13:30).
+//  3. Call Rotate() / RotateWithReason("day-change") manually.
+//  4. Write another log entry.
+//  5. Expect exactly 2 files: the backup from step 3 and the live log —
+//     NOT an additional empty backup produced by the scheduled-mark check in Write().
+func TestRotateNoDoubleBackupOnScheduledMark(t *testing.T) {
+	oldNow := currentTime
+	defer func() { currentTime = oldNow }()
+
+	// Start on Jan 27 at 10:00.
+	now := time.Date(2026, 1, 27, 10, 0, 0, 0, time.UTC)
+	currentTime = func() time.Time { return now }
+
+	dir := mktempDir(t)
+	name := filepath.Join(dir, "operation.log")
+
+	l := &Logger{
+		Filename:  name,
+		MaxSize:   500,
+		RotateAt:  []string{"00:00"}, // midnight
+		LocalTime: false,
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	// Step 1: write a log entry on Jan 27.
+	writeOnce(t, l, "Logging a line here\n")
+	fileCount(dir, 1, t)
+
+	// Step 2: advance clock to Jan 28 13:30 (midnight mark has been crossed).
+	now = time.Date(2026, 1, 28, 13, 30, 0, 0, time.UTC)
+
+	// Step 3: manually rotate.
+	if err := l.Rotate(); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+
+	// Step 4: write another entry.
+	writeOnce(t, l, "After rotate\n")
+
+	// Step 5: should be exactly 2 files: 1 backup + 1 live log.
+	// Before the fix a second empty backup was created because the RotateAt
+	// midnight check in Write() re-triggered on the freshly-created empty file.
+	fileCount(dir, 2, t)
+}
+
+// TestRotateWithReasonNoDoubleBackupOnScheduledMark is the same scenario as
+// TestRotateNoDoubleBackupOnScheduledMark but uses RotateWithReason.
+func TestRotateWithReasonNoDoubleBackupOnScheduledMark(t *testing.T) {
+	oldNow := currentTime
+	defer func() { currentTime = oldNow }()
+
+	now := time.Date(2026, 1, 27, 10, 0, 0, 0, time.UTC)
+	currentTime = func() time.Time { return now }
+
+	dir := mktempDir(t)
+	name := filepath.Join(dir, "operation.log")
+
+	l := &Logger{
+		Filename:  name,
+		MaxSize:   500,
+		RotateAt:  []string{"00:00"}, // midnight
+		LocalTime: false,
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	writeOnce(t, l, "Logging a line here\n")
+	fileCount(dir, 1, t)
+
+	now = time.Date(2026, 1, 28, 13, 30, 0, 0, time.UTC)
+
+	if err := l.RotateWithReason("day-change"); err != nil {
+		t.Fatalf("RotateWithReason: %v", err)
+	}
+
+	writeOnce(t, l, "After rotate\n")
+
+	fileCount(dir, 2, t)
+}
