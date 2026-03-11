@@ -3065,3 +3065,101 @@ func TestRotateWithReason_EmptyFallsBackToSizeWhenNotDue(t *testing.T) {
 		t.Fatalf("expected a rotated file with '-size.log' suffix when interval is not due")
 	}
 }
+
+// TestRotate_NoDuplicateRotationOnNextWrite verifies that calling Rotate() when
+// an interval rotation is due does NOT cause another automatic rotation on the
+// very next Write() call (regression test for lastRotationTime not being updated).
+func TestRotate_NoDuplicateRotationOnNextWrite(t *testing.T) {
+	oldNow := currentTime
+	defer func() { currentTime = oldNow }()
+
+	now := time.Date(2025, 5, 22, 10, 0, 0, 0, time.UTC)
+	currentTime = func() time.Time { return now }
+
+	dir := mktempDir(t)
+	name := filepath.Join(dir, "dup.log")
+
+	l := &Logger{
+		Filename:         name,
+		RotationInterval: time.Hour,
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	// First write: initializes lastRotationTime to `now`.
+	writeOnce(t, l, "initial\n")
+
+	// Advance time beyond the interval so an interval rotation is due.
+	now = now.Add(2 * time.Hour)
+
+	// Manual rotation: should rotate once and update lastRotationTime.
+	if err := l.Rotate(); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+
+	// Write again: must NOT trigger a second automatic rotation.
+	writeOnce(t, l, "after-manual-rotate\n")
+
+	// Exactly one backup file should exist (from the manual Rotate call only).
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var backups []string
+	for _, e := range entries {
+		if !e.IsDir() && e.Name() != filepath.Base(name) {
+			backups = append(backups, e.Name())
+		}
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected exactly 1 backup file after manual Rotate + Write, got %d: %v", len(backups), backups)
+	}
+}
+
+// TestRotateWithReason_NoDuplicateRotationOnNextWrite verifies that calling
+// RotateWithReason() when an interval rotation is due does NOT cause another
+// automatic rotation on the very next Write() call.
+func TestRotateWithReason_NoDuplicateRotationOnNextWrite(t *testing.T) {
+	oldNow := currentTime
+	defer func() { currentTime = oldNow }()
+
+	now := time.Date(2025, 5, 22, 10, 0, 0, 0, time.UTC)
+	currentTime = func() time.Time { return now }
+
+	dir := mktempDir(t)
+	name := filepath.Join(dir, "dup2.log")
+
+	l := &Logger{
+		Filename:         name,
+		RotationInterval: time.Hour,
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	// First write: initializes lastRotationTime to `now`.
+	writeOnce(t, l, "initial\n")
+
+	// Advance time beyond the interval so an interval rotation is due.
+	now = now.Add(2 * time.Hour)
+
+	// Manual rotation with a custom reason: should rotate once and update lastRotationTime.
+	if err := l.RotateWithReason("deploy"); err != nil {
+		t.Fatalf("RotateWithReason: %v", err)
+	}
+
+	// Write again: must NOT trigger a second automatic rotation.
+	writeOnce(t, l, "after-manual-rotate\n")
+
+	// Exactly one backup file should exist (from the manual RotateWithReason call only).
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var backups []string
+	for _, e := range entries {
+		if !e.IsDir() && e.Name() != filepath.Base(name) {
+			backups = append(backups, e.Name())
+		}
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected exactly 1 backup file after manual RotateWithReason + Write, got %d: %v", len(backups), backups)
+	}
+}
