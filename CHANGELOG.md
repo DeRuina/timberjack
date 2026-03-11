@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0](https://github.com/DeRuina/timberjack/compare/v1.3.9...v1.4.0) (2026-03-11)
+
+### Features
+
+*  Fix duplicate rotation triggered by Write() after manual Rotate()/RotateWithReason() ([#84](https://github.com/DeRuina/timberjack/pull/84)) ([5aee542](https://github.com/DeRuina/timberjack/commit/5aee54253be72151c63904390195a34c0da05cf8))
+
+* Fix Windows file locking in compressLogFile  ([#65](https://github.com/DeRuina/timberjack/pull/65)) ([a560a29](https://github.com/DeRuina/timberjack/commit/a560a29cb76a7d6350c83f29b375a991c1a51a6d))
+
 ## [1.3.9](https://github.com/DeRuina/timberjack/compare/v1.3.8...v1.3.9) (2025-10-21)
 
 ### Features
