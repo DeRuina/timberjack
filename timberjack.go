@@ -652,9 +652,9 @@ func (l *Logger) rotate(reason string) error {
 // empty, it falls back to the default behavior used by Rotate(): "time" if an
 // interval rotation is due, otherwise "size".
 //
-// NOTE: Like Rotate(), this does not modify lastRotationTime. If an interval
-// rotation is already due, a subsequent write may still trigger another
-// interval-based rotation.
+// After a successful rotation, lastRotationTime is updated to the current time
+// so that a subsequent Write() does not trigger a duplicate interval-based or
+// scheduled rotation.
 func (l *Logger) RotateWithReason(reason string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -672,7 +672,11 @@ func (l *Logger) RotateWithReason(reason string) error {
 		}
 	}
 
-	return l.rotate(r)
+	if err := l.rotate(r); err != nil {
+		return err
+	}
+	l.lastRotationTime = l.resolvedTimeNow()
+	return nil
 }
 
 func backupNameWithResolved(name string, local bool, reason string, t time.Time, layout string, afterExt bool) string {
