@@ -721,7 +721,10 @@ func (l *Logger) openNew(reasonForBackup string) error {
 	info, err := l.resolvedStat(name)
 	if err == nil {
 		oldInfo = info
-		finalMode = oldInfo.Mode()
+		// Only use the existing file's mode when no explicit FileMode is configured.
+		if l.FileMode == 0 {
+			finalMode = oldInfo.Mode()
+		}
 
 		rotationTimeForBackup := l.resolvedTimeNow()
 
@@ -750,6 +753,14 @@ func (l *Logger) openNew(reasonForBackup string) error {
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, finalMode)
 	if err != nil {
 		return fmt.Errorf("can't open new logfile %s: %s", name, err)
+	}
+	// Apply the exact mode via chmod so the process umask cannot mask bits.
+	if err := os.Chmod(name, finalMode); err != nil {
+		closeErr := f.Close()
+		if closeErr != nil {
+			return fmt.Errorf("can't set mode on new logfile %s: %s (also failed to close: %v)", name, err, closeErr)
+		}
+		return fmt.Errorf("can't set mode on new logfile %s: %s", name, err)
 	}
 	l.file = f
 	l.size = 0
