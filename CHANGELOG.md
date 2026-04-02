@@ -1,5 +1,13 @@
 # Changelog
 
+
+## [1.4.1](https://github.com/DeRuina/timberjack/compare/v1.4.0...v1.4.1) (2026-04-02)
+
+### Features
+
+*  Fix preserve configured FileMode after rotation (umask bypass) ([#91](https://github.com/DeRuina/timberjack/pull/91)) ([b9823ec](https://github.com/DeRuina/timberjack/commit/b9823ec5950b3e5d8d104ce620c32414e83f5f22))
+
+
 ## [1.4.0](https://github.com/DeRuina/timberjack/compare/v1.3.9...v1.4.0) (2026-03-11)
 
 ### Features
