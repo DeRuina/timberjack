@@ -756,7 +756,10 @@ func (l *Logger) openNew(reasonForBackup string) error {
 	}
 	// Apply the exact mode via chmod so the process umask cannot mask bits.
 	if err := os.Chmod(name, finalMode); err != nil {
-		f.Close()
+		closeErr := f.Close()
+		if closeErr != nil {
+			return fmt.Errorf("can't set mode on new logfile %s: %s (also failed to close: %v)", name, err, closeErr)
+		}
 		return fmt.Errorf("can't set mode on new logfile %s: %s", name, err)
 	}
 	l.file = f
