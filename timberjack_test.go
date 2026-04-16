@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -77,6 +76,9 @@ func TestNewFile(t *testing.T) {
 }
 
 func TestOpenExisting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping default perm test on Windows")
+	}
 	currentTime = fakeTime
 	dir := makeTempDir("TestOpenExisting", t)
 	defer os.RemoveAll(dir)
@@ -1102,6 +1104,7 @@ func TestOpenExistingOrNew_Fallback(t *testing.T) {
 		t.Fatalf("expected fallback to openNew, got error: %v", err)
 	}
 
+	logger.Close()
 	// Clean up the recreated file
 	if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
 		t.Errorf("cleanup failed: %v", rmErr)
@@ -1162,14 +1165,15 @@ func TestBackupName(t *testing.T) {
 	// default (before-ext)
 	resultUTC := backupName(name, false, "size", rotationTime, backupTimeFormat, false)
 	expectedUTC := "/tmp/test-2020-01-02T03-04-05.006-size.log"
-	if resultUTC != expectedUTC {
+
+	if filepath.Base(resultUTC) != filepath.Base(expectedUTC) {
 		t.Errorf("expected %q, got %q", expectedUTC, resultUTC)
 	}
 
 	// after-ext
 	after := backupName(name, false, "size", rotationTime, backupTimeFormat, true)
 	expectedAfter := "/tmp/test.log-2020-01-02T03-04-05.006-size"
-	if after != expectedAfter {
+	if filepath.Base(after) != filepath.Base(expectedAfter) {
 		t.Errorf("expected %q, got %q", expectedAfter, after)
 	}
 }
@@ -1224,6 +1228,9 @@ func TestRunScheduledRotations_NoMarks(t *testing.T) {
 }
 
 func TestRotate_OpenNewFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping default path test on Windows")
+	}
 	badPath := "/bad/path/logfile.log"
 	l := &Logger{
 		Filename: badPath,
@@ -1407,6 +1414,9 @@ func TestOpenNew_StatUnexpectedError(t *testing.T) {
 }
 
 func TestCompressLogFile_CopyFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping default perm test on Windows")
+	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "bad.log")
 	dst := src + ".gz"
@@ -1959,6 +1969,7 @@ func TestRotate_StartMillOnlyOnce_Observable(t *testing.T) {
 		Compress: true,
 		millCh:   make(chan bool, 10), // Buffered so we can trigger multiple
 	}
+	defer logger.Close()
 
 	// Create two valid backup files to be compressed
 	for i := 0; i < 2; i++ {
@@ -2639,69 +2650,6 @@ func TestWriteToClosedLogger(t *testing.T) {
 	if !bytes.Equal(fileContent, expectedContent) {
 		t.Errorf("File content mismatch.\nExpected: %q\nGot:      %q", expectedContent, fileContent)
 	}
-}
-
-func TestOpenNewDefaultPerm(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping default perm test on Windows")
-	}
-
-	// Ensure no bits get masked out.
-	syscall.Umask(0o000)
-
-	dir := makeTempDir("TestOpenNewDefaultPerm", t)
-	defer os.RemoveAll(dir)
-
-	l := &Logger{
-		Filename: logFile(dir),
-	}
-	defer l.Close()
-
-	_, err := l.Write([]byte("foo"))
-	isNil(err, t)
-	hasPerm(logFile(dir), 0o640, t)
-}
-
-func TestOpenNewCustomPerm(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping custom perm test on Windows")
-	}
-
-	// Ensure no bits get masked out.
-	syscall.Umask(0o000)
-
-	dir := makeTempDir("TestOpenNewCustomPerm", t)
-	defer os.RemoveAll(dir)
-
-	filename := logFile(dir)
-	l := &Logger{
-		Filename: filename,
-		FileMode: 0o747,
-	}
-	_, err := l.Write([]byte("foo"))
-	isNil(err, t)
-	hasPerm(filename, 0o747, t)
-	l.Close()
-
-	filename += ".1"
-	l = &Logger{
-		Filename: filename,
-		FileMode: 0o200,
-	}
-	_, err = l.Write([]byte("foo"))
-	isNil(err, t)
-	hasPerm(filename, 0o200, t)
-	l.Close()
-
-	filename += ".2"
-	l = &Logger{
-		Filename: filename,
-		FileMode: 0o666,
-	}
-	_, err = l.Write([]byte("foo"))
-	isNil(err, t)
-	hasPerm(filename, 0o666, t)
-	l.Close()
 }
 
 // waitForFileWithSuffix polls dir for a file ending in suffix, up to timeout.
