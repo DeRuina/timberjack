@@ -6,8 +6,6 @@ import (
 	"os"
 	"syscall"
 	"testing"
-
-	"golang.org/x/sys/unix"
 )
 
 func TestOpenNewDefaultPerm(t *testing.T) {
@@ -37,7 +35,7 @@ func TestOpenNewCustomPerm(t *testing.T) {
 	// }
 
 	// Ensure no bits get masked out.
-	unix.Umask(0o000)
+	syscall.Umask(0o000)
 
 	dir := makeTempDir("TestOpenNewCustomPerm", t)
 	defer os.RemoveAll(dir)
