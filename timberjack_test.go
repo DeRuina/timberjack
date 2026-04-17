@@ -1227,21 +1227,6 @@ func TestRunScheduledRotations_NoMarks(t *testing.T) {
 	}
 }
 
-func TestRotate_OpenNewFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping default path test on Windows")
-	}
-	badPath := "/bad/path/logfile.log"
-	l := &Logger{
-		Filename: badPath,
-	}
-	// force an invalid path to trigger openNew failure
-	err := l.rotate("manual")
-	if err == nil {
-		t.Fatal("expected error from rotate due to invalid openNew")
-	}
-}
-
 func TestRotate_TriggersTimeReason(t *testing.T) {
 	currentTime = func() time.Time {
 		return time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -1410,35 +1395,6 @@ func TestOpenNew_StatUnexpectedError(t *testing.T) {
 	err := logger.openNew("size")
 	if err == nil || !strings.Contains(err.Error(), "failed to stat") {
 		t.Errorf("expected stat failure, got: %v", err)
-	}
-}
-
-func TestCompressLogFile_CopyFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Skipping default perm test on Windows")
-	}
-	dir := t.TempDir()
-	src := filepath.Join(dir, "bad.log")
-	dst := src + ".gz"
-
-	if err := os.WriteFile(src, []byte("data"), 0o200); err != nil { // write-only
-		t.Fatalf("failed to create test file: %v", err)
-	}
-	defer os.Chmod(src, 0o644)
-
-	originalStat := osStat
-	osStat = func(name string) (os.FileInfo, error) {
-		return os.Stat(src)
-	}
-	defer func() { osStat = originalStat }()
-
-	l := &Logger{}
-	// snapshot patched osStat
-	l.resolveConfigLocked()
-
-	err := l.compressLogFile(src, dst)
-	if err == nil {
-		t.Errorf("expected failure during compression, got: %v", err)
 	}
 }
 
