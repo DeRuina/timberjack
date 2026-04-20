@@ -79,32 +79,38 @@ func TestOpenNewCustomPerm(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	filename := logFile(dir)
-	l := &Logger{
+	l1 := &Logger{
 		Filename: filename,
 		FileMode: 0o747,
 	}
-	_, err := l.Write([]byte("foo"))
+	t.Cleanup(func() {
+		l1.Close()
+	})
+	_, err := l1.Write([]byte("foo"))
 	isNil(err, t)
 	hasPerm(filename, 0o747, t)
-	l.Close()
 
 	filename += ".1"
-	l = &Logger{
+	l2 := &Logger{
 		Filename: filename,
 		FileMode: 0o200,
 	}
-	_, err = l.Write([]byte("foo"))
+	t.Cleanup(func() {
+		l2.Close()
+	})
+	_, err = l2.Write([]byte("foo"))
 	isNil(err, t)
 	hasPerm(filename, 0o200, t)
-	l.Close()
 
 	filename += ".2"
-	l = &Logger{
+	l3 := &Logger{
 		Filename: filename,
 		FileMode: 0o666,
 	}
-	_, err = l.Write([]byte("foo"))
+	t.Cleanup(func() {
+		l3.Close()
+	})
+	_, err = l3.Write([]byte("foo"))
 	isNil(err, t)
 	hasPerm(filename, 0o666, t)
-	l.Close()
 }
