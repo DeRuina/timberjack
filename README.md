@@ -20,7 +20,7 @@ go get github.com/DeRuina/timberjack
 import "github.com/DeRuina/timberjack"
 ```
 
-Timberjack is a pluggable component that manages log file writing and rotation. It works with any logger that writes to an `io.Writer`, including the standard library’s `log` package.
+Timberjack is a pluggable component that manages log file writing and rotation. It works with any logger that writes to an `io.Writer`, including the standard library’s `log` package. `Logger` also satisfies `zapcore.WriteSyncer` (from `go.uber.org/zap`), so it can be passed directly to `zapcore.NewCore` or wrapped with `zapcore.AddSync`.
 
 > ⚠️ Timberjack assumes **one process** writes to a given file. Reusing the same config from multiple
 > processes on the same machine may lead to unexpected behavior.
@@ -94,6 +94,41 @@ func main() {
     }()
 
     // ...
+}
+```
+
+
+
+## Use with go.uber.org/zap
+
+`Logger` satisfies `zapcore.WriteSyncer`, so you can plug it straight into a zap core:
+
+```go
+import (
+    "go.uber.org/zap"
+    "go.uber.org/zap/zapcore"
+    "github.com/DeRuina/timberjack"
+)
+
+func main() {
+    w := &timberjack.Logger{
+        Filename:   "/var/log/myapp/foo.log",
+        MaxSize:    500,   // MB
+        MaxBackups: 3,
+        MaxAge:     28,    // days
+        Compression: "zstd",
+    }
+    defer w.Close()
+
+    core := zapcore.NewCore(
+        zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+        zapcore.AddSync(w), // or pass w directly — Logger satisfies WriteSyncer
+        zap.InfoLevel,
+    )
+    logger := zap.New(core)
+    defer logger.Sync()
+
+    logger.Info("Application started")
 }
 ```
 
@@ -217,6 +252,7 @@ On each new log file creation, timberjack:
 
 * **Logger Must Be Closed**
   Always call `logger.Close()` when done logging. This shuts down internal goroutines used for scheduled rotation and cleanup. Failing to close the logger can result in orphaned background processes, open file handles, and memory leaks.
+  `Sync()` is safe to call at any point (including after `Close()`); it is a no-op when the logger is closed or no file has been opened yet.
 
 * **Size-Based Rotation Is Always Active**
   Regardless of `RotationInterval` or `RotateAtMinutes`/`RotateAt`, size-based rotation is always enforced. If a write causes the log to exceed `MaxSize` (default: 100MB), it triggers an immediate rotation.
