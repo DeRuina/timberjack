@@ -614,8 +614,8 @@ func (l *Logger) Close() error {
 }
 
 // Sync flushes buffered data to the underlying file, satisfying the
-// io.StringWriter and zapcore.WriteSyncer interfaces. It is a no-op when no
-// file is currently open (e.g. before the first write or after Close).
+// zapcore.WriteSyncer interface. It is a no-op when no file is currently open
+// (e.g. before the first write or after Close).
 func (l *Logger) Sync() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
