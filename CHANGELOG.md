@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.2](https://github.com/DeRuina/timberjack/compare/v1.4.1...v1.4.2) (2026-04-21)
+
+### Features
+
+* feat: add Sync() method satisfying zapcore.WriteSyncer ([#100](https://github.com/DeRuina/timberjack/pull/100)) ([0e0e326](https://github.com/DeRuina/timberjack/commit/0e0e326196131c28ebca14e60befd79c5032a287))
+
+* test: adapt test cases for Windows 10 environment ([#95](https://github.com/DeRuina/timberjack/pull/95)) ([cb7fbef](https://github.com/DeRuina/timberjack/commit/cb7fbefa63a0a2653005ca2775ed1e300e242a5c))
+
+*  fix: atomic compress write and content-based backup assertions to eliminate race failures ([#97](https://github.com/DeRuina/timberjack/pull/97)) ([0d444ed](https://github.com/DeRuina/timberjack/commit/0d444edc5e38efd580b519feaa9176516d31d2ee))
+
+
 
 ## [1.4.1](https://github.com/DeRuina/timberjack/compare/v1.4.0...v1.4.1) (2026-04-02)
 
