@@ -613,6 +613,22 @@ func (l *Logger) Close() error {
 	return err
 }
 
+// Sync flushes buffered data to the underlying file, satisfying the
+// zapcore.WriteSyncer interface. It is a no-op when no file is currently open
+// (e.g. before the first write or after Close).
+func (l *Logger) Sync() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if atomic.LoadUint32(&l.isClosed) == 1 {
+		return nil
+	}
+	if l.file == nil {
+		return nil
+	}
+	return l.file.Sync()
+}
+
 // closeFile closes the file if it is open. This is an internal method.
 // It expects l.mu to be held.
 func (l *Logger) closeFile() error {

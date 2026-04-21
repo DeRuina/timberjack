@@ -3063,3 +3063,45 @@ func TestRotateWithReason_NoDuplicateRotationOnNextWrite(t *testing.T) {
 		t.Fatalf("expected exactly 1 backup file after manual RotateWithReason + Write, got %d: %v", len(backups), backups)
 	}
 }
+
+func TestSync_OpenFile(t *testing.T) {
+	currentTime = fakeTime
+	defer func() { currentTime = time.Now }()
+
+	dir := makeTempDir("TestSync_OpenFile", t)
+	defer os.RemoveAll(dir)
+
+	l := &Logger{Filename: logFile(dir)}
+	defer l.Close()
+
+	_, err := l.Write([]byte("hello"))
+	isNil(err, t)
+
+	err = l.Sync()
+	isNil(err, t)
+}
+
+func TestSync_NoFileOpen(t *testing.T) {
+	l := &Logger{Filename: "/tmp/timberjack-sync-nofile.log"}
+	// Never written to, so no file is open.
+	err := l.Sync()
+	isNil(err, t)
+}
+
+func TestSync_AfterClose(t *testing.T) {
+	currentTime = fakeTime
+	defer func() { currentTime = time.Now }()
+
+	dir := makeTempDir("TestSync_AfterClose", t)
+	defer os.RemoveAll(dir)
+
+	l := &Logger{Filename: logFile(dir)}
+	_, err := l.Write([]byte("hello"))
+	isNil(err, t)
+
+	isNil(l.Close(), t)
+
+	// Sync on a closed logger must be a no-op, not an error.
+	err = l.Sync()
+	isNil(err, t)
+}
