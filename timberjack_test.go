@@ -945,8 +945,7 @@ func TestRotateAtMinutes(t *testing.T) {
 	isNil(err, t)
 	equals(len(content2), n, t)
 	existsWithContent(filename, content2, t)
-	expected1 := backupFileWithReason(dir, "time")
-	existsWithContent(expected1, content1, t)
+	findBackupFileWithContent(t, dir, "time", content1)
 	fileCount(dir, 2, t)
 
 	// 5) Advance past the 14:30 mark without writing → no new rotation
@@ -960,8 +959,7 @@ func TestRotateAtMinutes(t *testing.T) {
 	isNil(err, t)
 	equals(len(content3), n, t)
 	existsWithContent(filename, content3, t)
-	expected2 := backupFileWithReason(dir, "time")
-	existsWithContent(expected2, content2, t)
+	findBackupFileWithContent(t, dir, "time", content2)
 	fileCount(dir, 3, t)
 }
 
@@ -1011,8 +1009,7 @@ func TestRotateAt(t *testing.T) {
 	isNil(err, t)
 	equals(len(content2), n, t)
 	existsWithContent(filename, content2, t)
-	expected1 := backupFileWithReason(dir, "time")
-	existsWithContent(expected1, content1, t)
+	findBackupFileWithContent(t, dir, "time", content1)
 	fileCount(dir, 2, t)
 
 	// 5) Advance past the next day 10:00 mark without writing → no new rotation
@@ -1026,8 +1023,7 @@ func TestRotateAt(t *testing.T) {
 	isNil(err, t)
 	equals(len(content3), n, t)
 	existsWithContent(filename, content3, t)
-	expected2 := backupFileWithReason(dir, "time")
-	existsWithContent(expected2, content2, t)
+	findBackupFileWithContent(t, dir, "time", content2)
 	fileCount(dir, 3, t)
 }
 

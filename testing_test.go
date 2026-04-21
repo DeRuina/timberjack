@@ -1,10 +1,13 @@
 package timberjack
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -93,4 +96,28 @@ func _isNil(obtained interface{}) bool {
 // backupFileWithReason returns a backup file name with the given reason.
 func backupFileWithReason(dir, reason string) string {
 	return filepath.Join(dir, fmt.Sprintf("foobar-%s-%s.log", fakeTime().UTC().Format("2006-01-02T15-04-05.000"), reason))
+}
+
+// findBackupFileWithContent searches dir for a backup file whose name ends with
+// "-<reason>.log" and whose content equals the expected bytes. The test fails if
+// no matching file is found. This is intentionally content-based rather than
+// name-based, because the scheduled rotation goroutine may snapshot the fake
+// clock at a different instant than the test goroutine does.
+func findBackupFileWithContent(t testing.TB, dir, reason string, content []byte) {
+	t.Helper()
+	suffix := fmt.Sprintf("-%s.log", reason)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir %s: %v", dir, err)
+	}
+	for _, e := range ents {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), suffix) {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if readErr == nil && bytes.Equal(data, content) {
+			return
+		}
+	}
+	t.Fatalf("no backup file with suffix %q containing %q found in %s", suffix, string(content), dir)
 }
