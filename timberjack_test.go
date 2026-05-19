@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3104,4 +3105,190 @@ func TestSync_AfterClose(t *testing.T) {
 	// Sync on a closed logger must be a no-op, not an error.
 	err = l.Sync()
 	isNil(err, t)
+}
+
+// TestRunScheduledRotations_RotateErrorOnTimerFire sets the fake clock so that
+// the next scheduled slot fires in ~1 ms of real time, mocks osRename to force
+// rotation failure, and verifies that the goroutine handles the error and
+// eventually exits cleanly. Covers the rotate-error branch (lines 550-552).
+func TestRunScheduledRotations_RotateErrorOnTimerFire(t *testing.T) {
+	origTime := currentTime
+	defer func() { currentTime = origTime }()
+
+	// First call returns a time 1 ms before 10:01:00 so the real timer fires
+	// in ~1 ms. Subsequent calls return a time well past the slot so the next
+	// recalculation produces a ~24 h sleep, preventing a tight spin.
+	initial := time.Date(2025, 1, 1, 10, 0, 59, 999_000_000, time.UTC)
+	idle := time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)
+	var callN int32
+	currentTime = func() time.Time {
+		if atomic.AddInt32(&callN, 1) == 1 {
+			return initial
+		}
+		return idle
+	}
+
+	origRename := osRename
+	defer func() { osRename = origRename }()
+	osRename = func(_, _ string) error { return fmt.Errorf("forced rename failure") }
+
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "sched-fail.log")
+	_ = os.WriteFile(logFile, []byte("seed"), 0o644)
+
+	l := &Logger{Filename: logFile}
+	l.resolveConfigLocked()
+
+	quit := make(chan struct{})
+	slots := []rotateAt{{10, 1}}
+	l.scheduledRotationWg.Add(1)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+
+	time.Sleep(50 * time.Millisecond)
+	close(quit)
+	l.scheduledRotationWg.Wait()
+}
+
+// TestRunScheduledRotations_RotateSuccessOnTimerFire is the complement of
+// TestRunScheduledRotations_RotateErrorOnTimerFire: the timer fires in ~1 ms
+// and rotation succeeds, covering the else-branch that updates lastRotationTime
+// (lines 558-560 in runScheduledRotations).
+func TestRunScheduledRotations_RotateSuccessOnTimerFire(t *testing.T) {
+	origTime := currentTime
+	defer func() { currentTime = origTime }()
+
+	initial := time.Date(2025, 1, 1, 10, 0, 59, 999_000_000, time.UTC)
+	idle := time.Date(2025, 1, 1, 10, 2, 0, 0, time.UTC)
+	var callN int32
+	currentTime = func() time.Time {
+		if atomic.AddInt32(&callN, 1) == 1 {
+			return initial
+		}
+		return idle
+	}
+
+	tmp := t.TempDir()
+	logFile := filepath.Join(tmp, "sched-ok.log")
+	_ = os.WriteFile(logFile, []byte("seed"), 0o644)
+
+	l := &Logger{Filename: logFile}
+	l.resolveConfigLocked()
+
+	quit := make(chan struct{})
+	slots := []rotateAt{{10, 1}}
+	l.scheduledRotationWg.Add(1)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+
+	time.Sleep(50 * time.Millisecond)
+	close(quit)
+	l.scheduledRotationWg.Wait()
+}
+
+// TestOpenNew_ChownFails verifies that a chown error after creating the new
+// log file is non-fatal: openNew must succeed and the caller is not affected.
+// Covers the chown-error log path in openNew (lines 786-788).
+func TestOpenNew_ChownFails(t *testing.T) {
+	origTime := currentTime
+	defer func() { currentTime = origTime }()
+	currentTime = func() time.Time { return time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC) }
+
+	origChown := chown
+	defer func() { chown = origChown }()
+	chown = func(_ string, _ os.FileInfo) error { return fmt.Errorf("mock chown failure") }
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "chown-test.log")
+	_ = os.WriteFile(file, []byte("existing content"), 0o644)
+
+	l := &Logger{Filename: file}
+	if err := l.openNew("size"); err != nil {
+		t.Fatalf("expected success despite chown failure, got: %v", err)
+	}
+}
+
+// TestCompressLogFile_RenameTmpDstFails mocks resolvedRename to fail during
+// the atomic rename of the temp compressed file to the final destination.
+// Covers the rename-error return path in compressLogFile (lines 1263-1266).
+func TestCompressLogFile_RenameTmpDstFails(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.log")
+	dst := src + ".gz"
+	_ = os.WriteFile(src, []byte("data to compress"), 0o644)
+
+	origRename := osRename
+	osRename = func(_, _ string) error { return fmt.Errorf("mock rename failure") }
+	defer func() { osRename = origRename }()
+
+	l := &Logger{}
+	l.resolveConfigLocked()
+
+	err := l.compressLogFile(src, dst)
+	if err == nil || !strings.Contains(err.Error(), "failed to rename temp compressed file") {
+		t.Fatalf("expected rename error, got: %v", err)
+	}
+	if _, statErr := os.Stat(dst + ".tmp"); !os.IsNotExist(statErr) {
+		t.Error("expected tmp file to be cleaned up after rename failure")
+	}
+}
+
+// TestCompressLogFile_GzipCloseErrorEmptySrc passes an empty source so that
+// io.Copy writes zero bytes (copyErr == nil) but gz.Close() must flush the
+// gzip header+trailer to a pre-closed file descriptor, causing a write error.
+// Covers the "copyErr==nil && closeErr!=nil" gzip path (lines 1246-1248) and
+// the shared copyErr!=nil cleanup (lines 1251-1255).
+func TestCompressLogFile_GzipCloseErrorEmptySrc(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "empty.log")
+	_ = os.WriteFile(src, []byte{}, 0o644)
+	dst := filepath.Join(dir, "empty.log.gz")
+
+	// Obtain a *os.File whose underlying fd is already closed so that any
+	// write to it (including gz.Close()'s flush) returns an error.
+	closedFile, err := os.CreateTemp(dir, "invalid-fd")
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+	closedFile.Close()
+
+	origOpenFile := osOpenFile
+	osOpenFile = func(_ string, _ int, _ os.FileMode) (*os.File, error) {
+		return closedFile, nil
+	}
+	defer func() { osOpenFile = origOpenFile }()
+
+	l := &Logger{}
+	l.resolveConfigLocked()
+
+	if err := l.compressLogFile(src, dst); err == nil {
+		t.Fatal("expected error from gz.Close on invalid fd, got nil")
+	}
+}
+
+// TestCompressLogFile_ZstdCloseErrorEmptySrc is the zstd counterpart of
+// TestCompressLogFile_GzipCloseErrorEmptySrc: empty source, pre-closed fd.
+// Covers the "copyErr==nil && closeErr!=nil" zstd path (lines 1239-1241).
+func TestCompressLogFile_ZstdCloseErrorEmptySrc(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "empty.log")
+	_ = os.WriteFile(src, []byte{}, 0o644)
+	dst := filepath.Join(dir, "empty.log.zst")
+
+	closedFile, err := os.CreateTemp(dir, "invalid-fd")
+	if err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+	closedFile.Close()
+
+	origOpenFile := osOpenFile
+	osOpenFile = func(_ string, _ int, _ os.FileMode) (*os.File, error) {
+		return closedFile, nil
+	}
+	defer func() { osOpenFile = origOpenFile }()
+
+	l := &Logger{}
+	l.resolveConfigLocked()
+
+	if err := l.compressLogFile(src, dst); err == nil {
+		t.Fatal("expected error from zstd enc.Close on invalid fd, got nil")
+	}
 }
