@@ -212,6 +212,7 @@ type Logger struct {
 	resolvedStat    func(string) (os.FileInfo, error)
 	resolvedRename  func(string, string) error
 	resolvedRemove  func(string) error
+	resolvedOpenFile func(string, int, os.FileMode) (*os.File, error)
 }
 
 var (
@@ -229,6 +230,10 @@ var (
 	osRename = os.Rename
 
 	osRemove = os.Remove
+
+	osOpenFile = os.OpenFile
+
+	osChmod = os.Chmod
 
 	// empty BackupTimeFormatField
 	ErrEmptyBackupTimeFormatField = errors.New("empty backupformat field")
@@ -255,6 +260,7 @@ func (l *Logger) resolveConfigLocked() {
 		l.resolvedStat = osStat
 		l.resolvedRename = osRename
 		l.resolvedRemove = osRemove
+		l.resolvedOpenFile = osOpenFile
 
 		// Freeze compression (prevents races if toggled later)
 		l.resolvedCompression = l.effectiveCompression()
@@ -490,14 +496,10 @@ func (l *Logger) runScheduledRotations(quit <-chan struct{}, slots []rotateAt, l
 		return
 	}
 
-	timer := time.NewTimer(0) // Timer will be reset with the correct duration in the loop
-	if !timer.Stop() {
-		// Drain the channel if the timer fired prematurely (e.g., duration was 0 on first NewTimer)
-		select {
-		case <-timer.C:
-		default:
-		}
-	}
+	// Use a large initial duration so Stop() always wins the race against expiry.
+	// The timer is Reset with the correct duration at the top of each loop iteration.
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
 
 	for {
 		now := nowFn()
@@ -766,12 +768,12 @@ func (l *Logger) openNew(reasonForBackup string) error {
 	}
 
 	// Create and open the new log file at path `name`.
-	f, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, finalMode)
+	f, err := osOpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, finalMode)
 	if err != nil {
 		return fmt.Errorf("can't open new logfile %s: %s", name, err)
 	}
 	// Apply the exact mode via chmod so the process umask cannot mask bits.
-	if err := os.Chmod(name, finalMode); err != nil {
+	if err := osChmod(name, finalMode); err != nil {
 		closeErr := f.Close()
 		if closeErr != nil {
 			return fmt.Errorf("can't set mode on new logfile %s: %s (also failed to close: %v)", name, err, closeErr)
@@ -1217,7 +1219,7 @@ func (l *Logger) compressLogFile(src, dst string) error {
 
 	// Write to a temp file so that dst only appears once fully written (atomic publish).
 	tmpDst := dst + ".tmp"
-	dstFile, err := os.OpenFile(tmpDst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, srcInfo.Mode())
+	dstFile, err := l.resolvedOpenFile(tmpDst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, srcInfo.Mode())
 	if err != nil {
 		return fmt.Errorf("failed to open destination compressed log file %s: %v", tmpDst, err)
 	}
