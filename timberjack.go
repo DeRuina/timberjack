@@ -40,7 +40,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -374,7 +373,7 @@ func (l *Logger) ValidateBackupTimeFormat() error {
 	// 2025-05-22 23:41:59.987654321 +0000 UTC
 	now := time.Date(2025, 5, 22, 23, 41, 59, 987_654_321, time.UTC)
 
-	layoutPrecision := countDigitsAfterDot(l.BackupTimeFormat)
+	layoutPrecision := fractionalSecondDigits(l.BackupTimeFormat)
 
 	now, err := truncateFractional(now, layoutPrecision)
 	if err != nil {
@@ -1155,28 +1154,41 @@ func (l *Logger) prefixAndExt() (prefix, ext string) {
 	return prefix, ext
 }
 
-// countDigitsAfterDot returns the number of consecutive digit characters
-// immediately following the first '.' in the input.
-// It skips all characters before the '.' and stops counting at the first non-digit
-// character after the '.'.
-
-// Example: `prefix.0012304123suffix` would return 10
-// Example: `prefix.0012304_middle_123_suffix` would return 7
-func countDigitsAfterDot(layout string) int {
-	for i, ch := range layout {
-		if ch == '.' {
-			count := 0
-			for _, c := range layout[i+1:] {
-				if unicode.IsDigit(c) {
-					count++
-				} else {
-					break
-				}
-			}
-			return count
+// fractionalSecondDigits returns the number of fractional-second digits in a Go
+// time layout. In a layout, fractional seconds are written as a '.' or ',' followed
+// by a run of '0's (fixed precision) or '9's (trailing zeros trimmed); any other '.'
+// (for example one used as a date or time separator) is a literal character and does
+// not denote fractional seconds.
+//
+// Examples:
+//
+//	"2006-01-02T15-04-05.000"  -> 3   (fractional seconds)
+//	"2006-01-02 15:04:05.999"  -> 3   (fractional seconds)
+//	"2006-01-02_15.04.05"      -> 0   ('.' used as a separator)
+//	"2006.01.02-15-04-05"      -> 0   ('.' used as a separator)
+func fractionalSecondDigits(layout string) int {
+	for i := 0; i < len(layout); i++ {
+		if layout[i] != '.' && layout[i] != ',' {
+			continue
 		}
+		j := i + 1
+		if j >= len(layout) || (layout[j] != '0' && layout[j] != '9') {
+			continue // not a fractional-second specifier
+		}
+		digit := layout[j]
+		n := 0
+		for j < len(layout) && layout[j] == digit {
+			n++
+			j++
+		}
+		// A genuine fractional run is a homogeneous run of '0's or '9's; if another
+		// digit follows immediately, this '.' is a literal separator (e.g. "15.04").
+		if j < len(layout) && layout[j] >= '0' && layout[j] <= '9' {
+			continue
+		}
+		return n
 	}
-	return 0 // no '.' found or no digits after dot
+	return 0
 }
 
 // truncateFractional truncates time t to n fractional digits of seconds.
