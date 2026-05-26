@@ -285,7 +285,15 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 		// The logger is closed. To ensure the write succeeds, we perform a
 		// single open-write-close cycle. This does not perform rotation
 		// and does not restart the background goroutines. l.file remains nil.
-		file, openErr := os.OpenFile(l.filename(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		writeLen := int64(len(p))
+		if writeLen > l.max() {
+			return 0, fmt.Errorf("write length %d exceeds maximum file size %d", writeLen, l.max())
+		}
+		mode := l.FileMode
+		if mode == 0 {
+			mode = os.FileMode(defaultFileMode)
+		}
+		file, openErr := l.resolvedOpenFile(l.filename(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, mode)
 		if openErr != nil {
 			return 0, fmt.Errorf("timberjack: write on closed logger failed to open file: %w", openErr)
 		}
@@ -551,7 +559,7 @@ func (l *Logger) runScheduledRotations(quit <-chan struct{}, slots []rotateAt, l
 				if err := l.rotate("time"); err != nil { // Scheduled rotations are "time" based for filename
 					fmt.Fprintf(os.Stderr, "timberjack: [%s] scheduled rotation failed: %v\n", l.Filename, err)
 				} else {
-					l.lastRotationTime = nowFn()
+					l.lastRotationTime = nextRotationAbsoluteTime
 				}
 			}
 			l.mu.Unlock()
@@ -859,7 +867,7 @@ func (l *Logger) openExistingOrNew(writeLen int) error {
 	}
 
 	// Open existing file for appending.
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0)
+	file, err := osOpenFile(filename, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		// If opening existing fails (e.g., permissions, corruption), try to create a new one.
 		return l.openNew("initial") // Fallback if append fails
@@ -1368,7 +1376,7 @@ func sanitizeReason(s string) string {
 		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
 		if ok {
 			b.WriteRune(r)
-			lastDash = (r == '-')
+			lastDash = (r == '-' || r == '_')
 		} else {
 			// replace anything else (including whitespace) with a single '-'
 			if !lastDash && b.Len() > 0 {

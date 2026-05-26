@@ -3304,3 +3304,158 @@ func TestCompressLogFile_ZstdCloseErrorEmptySrc(t *testing.T) {
 		t.Fatal("expected error from zstd enc.Close on invalid fd, got nil")
 	}
 }
+
+// TestWriteToClosedLogger_RespectsFileMode verifies that the closed-logger write
+// path creates the file with the configured FileMode, not the old hardcoded 0o644.
+func TestWriteToClosedLogger_RespectsFileMode(t *testing.T) {
+	dir := mktempDir(t)
+	filename := filepath.Join(dir, "perm-closed.log")
+
+	l := &Logger{
+		Filename: filename,
+		FileMode: 0o600,
+	}
+	// Close immediately without writing so the file doesn't exist yet.
+	// The first write (below) will be to a closed logger and must create the
+	// file with 0o600 via the fixed path.
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := l.Write([]byte("after close\n")); err != nil {
+		t.Fatalf("Write after close: %v", err)
+	}
+
+	info, err := os.Stat(filename)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("file mode = %04o, want 0600", got)
+	}
+}
+
+// TestWriteToClosedLogger_RejectsOversizedWrite verifies that the closed-logger
+// write path enforces the MaxSize limit just like the normal write path does.
+func TestWriteToClosedLogger_RejectsOversizedWrite(t *testing.T) {
+	origMegabyte := megabyte
+	megabyte = 1
+	defer func() { megabyte = origMegabyte }()
+
+	dir := mktempDir(t)
+	filename := filepath.Join(dir, "oversize-closed.log")
+
+	l := &Logger{
+		Filename: filename,
+		MaxSize:  1, // 1 byte when megabyte == 1
+	}
+	writeOnce(t, l, "x")
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err := l.Write([]byte("toolong")) // 7 bytes > 1 byte max
+	if err == nil {
+		t.Fatal("expected error for oversized write to closed logger, got nil")
+	}
+}
+
+// TestRunScheduledRotations_LastRotationTimeIsTheMark verifies that after a
+// scheduled goroutine fires, lastRotationTime is set to the logical scheduled
+// mark (nextRotationAbsoluteTime) rather than the current wall time. This
+// prevents a subsequent Write from seeing the same mark as unprocessed and
+// triggering a duplicate rotation.
+func TestRunScheduledRotations_LastRotationTimeIsTheMark(t *testing.T) {
+	origTime := currentTime
+	defer func() { currentTime = origTime }()
+
+	mark := time.Date(2025, 6, 1, 10, 1, 0, 0, time.UTC)
+	before := mark.Add(-time.Millisecond) // 1 ms before mark → timer fires in ~1 ms
+	afterMark := mark.Add(time.Hour)
+
+	var callN int32
+	currentTime = func() time.Time {
+		if atomic.AddInt32(&callN, 1) == 1 {
+			return before
+		}
+		return afterMark
+	}
+
+	dir := mktempDir(t)
+	logFile := filepath.Join(dir, "mark-test.log")
+	_ = os.WriteFile(logFile, []byte("seed"), 0o644)
+
+	l := &Logger{Filename: logFile}
+	l.resolveConfigLocked()
+
+	quit := make(chan struct{})
+	slots := []rotateAt{{mark.Hour(), mark.Minute()}}
+	l.scheduledRotationWg.Add(1)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+
+	time.Sleep(100 * time.Millisecond)
+	close(quit)
+	l.scheduledRotationWg.Wait()
+
+	l.mu.Lock()
+	got := l.lastRotationTime
+	l.mu.Unlock()
+
+	if !got.Equal(mark) {
+		t.Errorf("lastRotationTime = %v, want %v (the scheduled mark)", got, mark)
+	}
+}
+
+// TestSanitizeReason_UnderscoreBeforeInvalidChar verifies that an underscore
+// immediately before a non-allowed character does not produce a "_-" sequence.
+// The fix treats '_' like '-' for the purposes of the duplicate-separator guard.
+func TestSanitizeReason_UnderscoreBeforeInvalidChar(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"my_ reason", "my_reason"},      // '_' then space must not yield "my_-reason"
+		{"a_ b", "a_b"},                  // same pattern, shorter
+		{"prefix_ suffix", "prefix_suffix"},
+		{"x_y z", "x_y-z"},              // valid "_y" then space — dash before "z" is correct
+	}
+	for _, tc := range cases {
+		got := sanitizeReason(tc.input)
+		if got != tc.want {
+			t.Errorf("sanitizeReason(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestOpenExistingOrNew_UsesOsOpenFileGlobal verifies that openExistingOrNew
+// routes its open-for-append call through the osOpenFile package-level variable
+// rather than calling os.OpenFile directly, so the call is interceptable by tests.
+func TestOpenExistingOrNew_UsesOsOpenFileGlobal(t *testing.T) {
+	defer leaktest.Check(t)()
+
+	dir := mktempDir(t)
+	filename := filepath.Join(dir, "append-global.log")
+	if err := os.WriteFile(filename, []byte("existing\n"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	var appendCalled bool
+	orig := osOpenFile
+	osOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		if name == filename && flag&os.O_APPEND != 0 {
+			appendCalled = true
+		}
+		return orig(name, flag, perm)
+	}
+	defer func() { osOpenFile = orig }()
+
+	l := &Logger{Filename: filename}
+	// defer l.Close() after defer leaktest.Check so Close runs first (LIFO),
+	// stopping the mill goroutine before leaktest inspects for leaks.
+	defer func() { _ = l.Close() }()
+	writeOnce(t, l, "new line\n")
+
+	if !appendCalled {
+		t.Error("osOpenFile was not called with O_APPEND; openExistingOrNew may have bypassed the global")
+	}
+}
