@@ -2386,27 +2386,30 @@ func TestOpenNew_SetsLogStartTimeWhenFileMissing(t *testing.T) {
 	}
 }
 
-func TestCountDigitsAfterDot(t *testing.T) {
+func TestFractionalSecondDigits(t *testing.T) {
 	tests := []struct {
 		layout   string
 		expected int
 	}{
-		{"2006-01-02 15:04:05", 0},           // no dot
-		{"2006-01-02 15:04:05.000", 3},       // exactly 3 digits
-		{"2006-01-02 15:04:05.000000", 6},    // 6 digits
-		{"2006-01-02 15:04:05.999999999", 9}, // 9 digits
-		{"2006-01-02 15:04:05.12345abc", 5},  // digits then letters
-		{"2006-01-02 15:04:05.", 0},          // dot but no digits
-		{".1234", 4},                         // string starts with dot + digits
-		{"prefix.987suffix", 3},              // digits then letters after dot
-		{"no_digits_after_dot.", 0},          // dot at end
-		{"no.dot.in.string", 0},              // dot but not fractional part
+		{"2006-01-02 15:04:05", 0},            // no dot
+		{"2006-01-02 15:04:05.000", 3},        // fractional seconds, 3 digits
+		{"2006-01-02 15:04:05.000000", 6},     // 6 digits
+		{"2006-01-02 15:04:05.999999999", 9},  // 9 digits (trailing-zero-trimmed)
+		{"2006-01-02 15:04:05,000", 3},        // comma is also a valid fractional separator
+		{"2006-01-02 15:04:05.12345abc", 0},   // '.' not followed by a 0/9 run -> separator, not fractional
+		{"2006-01-02 15:04:05.", 0},           // dot but no digits
+		{"2006-01-02_15.04.05", 0},            // '.' used as a time separator
+		{"2006.01.02-15-04-05", 0},            // '.' used as a date separator
+		{".1234", 0},                          // '.' followed by non 0/9 digit
+		{"prefix.987suffix", 0},               // not a fractional-second run
+		{"no_digits_after_dot.", 0},           // dot at end
+		{"no.dot.in.string", 0},               // dots followed by letters
 	}
 
 	for _, test := range tests {
-		got := countDigitsAfterDot(test.layout)
+		got := fractionalSecondDigits(test.layout)
 		if got != test.expected {
-			t.Errorf("countDigitsAfterDot(%q) = %d; want %d", test.layout, got, test.expected)
+			t.Errorf("fractionalSecondDigits(%q) = %d; want %d", test.layout, got, test.expected)
 		}
 	}
 }
@@ -2462,6 +2465,15 @@ func TestSuffixTimeFormat(t *testing.T) {
 	err = logger.ValidateBackupTimeFormat()
 	if err != nil {
 		t.Errorf("valid timestamp2 layout determined as invalid")
+	}
+
+	// Formats that use '.' as a separator (not as a fractional-second indicator) must be
+	// accepted; previously the precision was mis-detected and these were wrongly rejected.
+	for _, dotSeparated := range []string{`2006-01-02_15.04.05`, `2006.01.02-15-04-05`} {
+		logger.BackupTimeFormat = dotSeparated
+		if err = logger.ValidateBackupTimeFormat(); err != nil {
+			t.Errorf("format %q with '.' separator wrongly determined as invalid: %v", dotSeparated, err)
+		}
 	}
 
 	validFormat4 := `20060102-15-05` // precision upto 7 digits after .
