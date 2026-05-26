@@ -25,6 +25,42 @@ func TestRotate_OpenNewFails(t *testing.T) {
 	}
 }
 
+// TestCompressLogFilePreservesMode ensures that a compressed backup keeps the source log file's
+// permissions even when a non-zero umask is in effect. compressLogFile creates the destination
+// with srcInfo.Mode(), but without an explicit chmod the umask would mask bits — the same problem
+// that was fixed for newly created log files in openNew.
+func TestCompressLogFilePreservesMode(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("Skipping test when running as root") // root bypasses permission bits
+	}
+
+	// A umask that would strip group/other bits from the source mode if no chmod is applied.
+	oldMask := syscall.Umask(0o077)
+	defer syscall.Umask(oldMask)
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "foo.log")
+	dst := src + compressSuffix
+
+	if err := os.WriteFile(src, []byte("compress me"), 0o666); err != nil {
+		t.Fatalf("failed to create source file: %v", err)
+	}
+	// Ensure the source really has mode 0o666 regardless of the umask set above.
+	if err := os.Chmod(src, 0o666); err != nil {
+		t.Fatalf("failed to chmod source file: %v", err)
+	}
+
+	l := &Logger{Filename: src}
+	l.resolveConfigLocked()
+
+	if err := l.compressLogFile(src, dst); err != nil {
+		t.Fatalf("compressLogFile failed: %v", err)
+	}
+
+	// The compressed file must keep the source mode, not have bits masked out by the umask.
+	hasPerm(dst, 0o666, t)
+}
+
 func TestCompressLogFile_CopyFails(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("Skipping test when running as root")
