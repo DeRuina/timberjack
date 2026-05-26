@@ -1,8 +1,6 @@
 {
-  "release-type": "simple",
+  "release-type": "go",
   "packages": {
-    ".": {
-      "last-release-sha": "58b91c8eb33c3c8c5cc8d98cbcc8e97a44fb3a35"
-    }
+    ".": {}
   }
 }
