@@ -1223,6 +1223,14 @@ func (l *Logger) compressLogFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open destination compressed log file %s: %v", tmpDst, err)
 	}
+	// Apply the exact mode via chmod so the process umask cannot mask bits, mirroring openNew.
+	// Without this the compressed backup can end up with more restrictive permissions than the
+	// source log file whenever a non-zero umask is in effect.
+	if err := osChmod(tmpDst, srcInfo.Mode()); err != nil {
+		_ = dstFile.Close()
+		_ = os.Remove(tmpDst)
+		return fmt.Errorf("failed to set mode on compressed log file %s: %w", tmpDst, err)
+	}
 	// No `defer dstFile.Close()` here; explicit close ordering is critical.
 
 	var copyErr error // To capture error from io.Copy
