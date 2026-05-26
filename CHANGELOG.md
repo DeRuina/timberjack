@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.3](https://github.com/DeRuina/timberjack/compare/v1.4.2...v1.4.3) (2026-05-26)
+
+### Bug Fixes
+
+* correct five bugs in write path, scheduled rotation, and sanitization ([52781cd](https://github.com/DeRuina/timberjack/commit/52781cd6784ad6570dd91bbcce605b6acb206597))
+* detect fractional seconds correctly when validating BackupTimeFormat ([#108](https://github.com/DeRuina/timberjack/pull/108)) ([654eefe](https://github.com/DeRuina/timberjack/commit/654eefe4daa476ffa53027508ac05365db04a3a6))
+* preserve source file mode on compressed backups under umask ([#107](https://github.com/DeRuina/timberjack/pull/107)) ([5f48af4](https://github.com/DeRuina/timberjack/commit/5f48af4f03391ecd8a5df0c22de42ab8b70bf38b))
+
 ## [1.4.2](https://github.com/DeRuina/timberjack/compare/v1.4.1...v1.4.2) (2026-04-21)
 
 ### Features
