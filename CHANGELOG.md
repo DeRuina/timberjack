@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.4](https://github.com/DeRuina/timberjack/compare/v1.4.3...v1.4.4) (2026-05-27)
+
+### Bug Fixes
+
+* correct backup naming, compression recovery, goroutine race, and rotation rollback ([ed1192f](https://github.com/DeRuina/timberjack/commit/ed1192fe0e2df6b3b68fa1bc380b17f55465f215))
+
 ## [1.4.3](https://github.com/DeRuina/timberjack/compare/v1.4.2...v1.4.3) (2026-05-26)
 
 ### Bug Fixes
