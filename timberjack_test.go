@@ -1208,7 +1208,7 @@ func TestRunScheduledRotations_NoMarks(t *testing.T) {
 
 	quit := make(chan struct{})
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, nil, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, nil, time.UTC, currentTime, l.Filename)
 
 	done := make(chan struct{})
 	go func() {
@@ -1256,7 +1256,7 @@ func TestRunScheduledRotations_NoFutureTime(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 0}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(150 * time.Millisecond)
 	close(quit)
@@ -1443,7 +1443,7 @@ func TestRunScheduledRotations_NoFutureSlot(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 0}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(200 * time.Millisecond)
 	close(quit)
@@ -1768,7 +1768,7 @@ func TestRunScheduledRotations_NoFutureSlotFallback(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 0}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(200 * time.Millisecond)
 	close(quit)
@@ -1974,7 +1974,7 @@ func TestScheduledMinuteRotationFails(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 0}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(100 * time.Millisecond)
 	close(quit)
@@ -1992,7 +1992,7 @@ func TestRunScheduledRotations_CannotFindNextSlot(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 0}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(150 * time.Millisecond)
 	close(quit)
@@ -2034,7 +2034,7 @@ func TestRunScheduledRotations_NoFutureSlotFound(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 0}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(200 * time.Millisecond)
 	close(quit)
@@ -2056,7 +2056,7 @@ func TestScheduledRotation_TimerFiresAndRotates(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{10, 1}} // next minute after 'now'
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(1500 * time.Millisecond)
 	close(quit)
@@ -2116,7 +2116,7 @@ func TestRunScheduledRotations_FallbackRetry(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 0}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(200 * time.Millisecond)
 	close(quit)
@@ -2134,7 +2134,7 @@ func TestRunScheduledRotations_TimerFires(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 1}} // “minute 1”
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(1500 * time.Millisecond)
 	close(quit)
@@ -2231,7 +2231,7 @@ func TestRunScheduledRotations_NoFutureSlotRetry(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 0}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(200 * time.Millisecond)
 	close(quit)
@@ -2247,7 +2247,7 @@ func TestRunScheduledRotations_RotateFails(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 0}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(300 * time.Millisecond)
 	close(quit)
@@ -2324,7 +2324,7 @@ func TestRunScheduledRotations_FallbackOnRotateFailure(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{0, 0}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(300 * time.Millisecond)
 	close(quit)
@@ -2843,13 +2843,13 @@ func TestRotateWithReason_CustomReason_Sanitized(t *testing.T) {
 	// create the live file
 	writeOnce(t, l, "hi\n")
 
-	// Includes spaces, punctuation, and caps -> should sanitize to "reload-now-v2"
+	// Includes spaces, punctuation, and caps -> should sanitize to "reload_now_v2"
 	reason := "  Reload  NOW!! v2  "
 	if err := l.RotateWithReason(reason); err != nil {
 		t.Fatalf("RotateWithReason: %v", err)
 	}
 
-	// Expect exactly one rotated file ending with "-reload-now-v2.log"
+	// Expect exactly one rotated file ending with "-reload_now_v2.log"
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
@@ -2865,13 +2865,13 @@ func TestRotateWithReason_CustomReason_Sanitized(t *testing.T) {
 		if n == "app.log" {
 			continue
 		}
-		if strings.HasSuffix(n, "-reload-now-v2.log") {
+		if strings.HasSuffix(n, "-reload_now_v2.log") {
 			matches = append(matches, n)
 		}
 	}
 
 	if len(matches) != 1 {
-		t.Fatalf("expected 1 rotated file with '-reload-now-v2.log' suffix, got %d: %v", len(matches), matches)
+		t.Fatalf("expected 1 rotated file with '-reload_now_v2.log' suffix, got %d: %v", len(matches), matches)
 	}
 }
 
@@ -3154,7 +3154,7 @@ func TestRunScheduledRotations_RotateErrorOnTimerFire(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{10, 1}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(50 * time.Millisecond)
 	close(quit)
@@ -3189,7 +3189,7 @@ func TestRunScheduledRotations_RotateSuccessOnTimerFire(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{10, 1}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(50 * time.Millisecond)
 	close(quit)
@@ -3391,7 +3391,7 @@ func TestRunScheduledRotations_LastRotationTimeIsTheMark(t *testing.T) {
 	quit := make(chan struct{})
 	slots := []rotateAt{{mark.Hour(), mark.Minute()}}
 	l.scheduledRotationWg.Add(1)
-	go l.runScheduledRotations(quit, slots, time.UTC, currentTime)
+	go l.runScheduledRotations(quit, slots, time.UTC, currentTime, l.Filename)
 
 	time.Sleep(100 * time.Millisecond)
 	close(quit)
@@ -3417,7 +3417,7 @@ func TestSanitizeReason_UnderscoreBeforeInvalidChar(t *testing.T) {
 		{"my_ reason", "my_reason"},      // '_' then space must not yield "my_-reason"
 		{"a_ b", "a_b"},                  // same pattern, shorter
 		{"prefix_ suffix", "prefix_suffix"},
-		{"x_y z", "x_y-z"},              // valid "_y" then space — dash before "z" is correct
+		{"x_y z", "x_y_z"},              // valid "_y" then space — underscore before "z" is correct
 	}
 	for _, tc := range cases {
 		got := sanitizeReason(tc.input)
@@ -3457,5 +3457,140 @@ func TestOpenExistingOrNew_UsesOsOpenFileGlobal(t *testing.T) {
 
 	if !appendCalled {
 		t.Error("osOpenFile was not called with O_APPEND; openExistingOrNew may have bypassed the global")
+	}
+}
+
+// TestRotateWithReason_HyphenReasonCleanedUp verifies that hyphens in a rotation
+// reason are converted to underscores, producing a backup filename that
+// timeFromName can parse so MaxBackups enforcement removes excess old backups.
+// Without the fix, hyphens inside the reason confuse strings.LastIndex("-"),
+// making the backup invisible to cleanup.
+func TestRotateWithReason_HyphenReasonCleanedUp(t *testing.T) {
+	currentTime = fakeTime
+
+	dir := makeTempDir("TestHyphenReason", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir)
+	l := &Logger{
+		Filename:   filename,
+		MaxBackups: 1,
+		MaxSize:    100,
+	}
+	defer l.Close()
+
+	_, err := l.Write([]byte("first\n"))
+	isNil(err, t)
+
+	newFakeTime()
+
+	isNil(l.RotateWithReason("reload-now-v2"), t)
+
+	// Backup must use underscores in the reason field, not hyphens.
+	entries, err := os.ReadDir(dir)
+	isNil(err, t)
+	var backups []string
+	for _, e := range entries {
+		if !e.IsDir() && e.Name() != filepath.Base(filename) {
+			backups = append(backups, e.Name())
+		}
+	}
+	equals(1, len(backups), t)
+	if !strings.HasSuffix(backups[0], "-reload_now_v2.log") {
+		t.Fatalf("expected backup ending in -reload_now_v2.log, got %q", backups[0])
+	}
+
+	// A second rotation with MaxBackups=1 must clean up the first backup.
+	_, err = l.Write([]byte("second\n"))
+	isNil(err, t)
+	newFakeTime()
+	isNil(l.RotateWithReason("reload-now-v2"), t)
+
+	<-time.After(10 * time.Millisecond)
+
+	fileCount(dir, 2, t) // live file + 1 newest backup
+}
+
+// TestCompressLogFile_SkipsRecompressIfDstNonEmpty verifies that when a non-empty
+// compressed destination already exists (a previous cycle compressed successfully
+// but failed to remove the source), compressLogFile removes the source without
+// overwriting the valid compressed backup.
+func TestCompressLogFile_SkipsRecompressIfDstNonEmpty(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "app-2025-01-01T00-00-00.000-size.log")
+	dst := src + compressSuffix
+
+	if err := os.WriteFile(src, []byte("original log content"), 0o644); err != nil {
+		t.Fatalf("setup src: %v", err)
+	}
+	existingContent := []byte("already compressed data")
+	if err := os.WriteFile(dst, existingContent, 0o644); err != nil {
+		t.Fatalf("setup dst: %v", err)
+	}
+
+	l := &Logger{}
+	l.resolveConfigLocked()
+
+	if err := l.compressLogFile(src, dst); err != nil {
+		t.Fatalf("compressLogFile: %v", err)
+	}
+
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Error("expected source to be removed, but it still exists")
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if !bytes.Equal(got, existingContent) {
+		t.Errorf("dst content changed: got %q, want %q", got, existingContent)
+	}
+}
+
+// TestOpenNew_RollsBackRenameOnCreateFailure verifies that when osOpenFile fails
+// to create the new log file after the existing log has already been renamed to a
+// backup path, openNew renames the backup back to the original filename so the
+// filesystem is left in a consistent state.
+func TestOpenNew_RollsBackRenameOnCreateFailure(t *testing.T) {
+	origTime := currentTime
+	defer func() { currentTime = origTime }()
+	currentTime = func() time.Time { return time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC) }
+
+	origOpenFile := osOpenFile
+	defer func() { osOpenFile = origOpenFile }()
+	osOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		if flag&os.O_TRUNC != 0 {
+			return nil, fmt.Errorf("mock create failure")
+		}
+		return origOpenFile(name, flag, perm)
+	}
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "rollback.log")
+	originalContent := []byte("important log data")
+	if err := os.WriteFile(logPath, originalContent, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	l := &Logger{Filename: logPath}
+	if err := l.openNew("size"); err == nil {
+		t.Fatal("expected openNew to fail when create fails")
+	}
+
+	// Original file must be restored by the rollback.
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("original log missing after rollback: %v", err)
+	}
+	if !bytes.Equal(got, originalContent) {
+		t.Errorf("original content not restored: got %q, want %q", got, originalContent)
+	}
+
+	// No orphaned backup file should remain.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if !e.IsDir() && e.Name() != filepath.Base(logPath) {
+			t.Errorf("unexpected file left after rollback: %s", e.Name())
+		}
 	}
 }

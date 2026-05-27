@@ -487,15 +487,16 @@ func (l *Logger) ensureScheduledRotationLoopRunning() {
 		slots := l.processedRotateAt
 		loc := l.location()
 		nowFn := l.resolvedTimeNow
+		filename := l.Filename
 
 		l.scheduledRotationWg.Add(1)
-		go l.runScheduledRotations(quitCh, slots, loc, nowFn)
+		go l.runScheduledRotations(quitCh, slots, loc, nowFn, filename)
 	})
 }
 
 // runScheduledRotations is the main loop for handling rotations at specific minute marks
 // as defined in RotateAtMinutes. It runs in a separate goroutine.
-func (l *Logger) runScheduledRotations(quit <-chan struct{}, slots []rotateAt, loc *time.Location, nowFn func() time.Time) {
+func (l *Logger) runScheduledRotations(quit <-chan struct{}, slots []rotateAt, loc *time.Location, nowFn func() time.Time, filename string) {
 	defer l.scheduledRotationWg.Done()
 
 	// No slots to process, exit immediately.
@@ -537,7 +538,7 @@ func (l *Logger) runScheduledRotations(quit <-chan struct{}, slots []rotateAt, l
 			// This should ideally not happen if processedRotateAt is valid and non-empty.
 			// Could occur if currentTime() is unreliable or jumps massively backward.
 			// Log an error and retry calculation after a fallback delay.
-			fmt.Fprintf(os.Stderr, "timberjack: [%s] Could not determine next scheduled rotation time for %v with marks %v. Retrying calculation in 1 minute.\n", l.Filename, nowInLocation, slots)
+			fmt.Fprintf(os.Stderr, "timberjack: [%s] Could not determine next scheduled rotation time for %v with marks %v. Retrying calculation in 1 minute.\n", filename, nowInLocation, slots)
 			select {
 			case <-time.After(time.Minute): // Wait a bit before retrying calculation
 				continue // Restart the outer loop to recalculate
@@ -557,7 +558,7 @@ func (l *Logger) runScheduledRotations(quit <-chan struct{}, slots []rotateAt, l
 			// very close to, but just before or at, this scheduled time for the same mark.
 			if l.lastRotationTime.Before(nextRotationAbsoluteTime) {
 				if err := l.rotate("time"); err != nil { // Scheduled rotations are "time" based for filename
-					fmt.Fprintf(os.Stderr, "timberjack: [%s] scheduled rotation failed: %v\n", l.Filename, err)
+					fmt.Fprintf(os.Stderr, "timberjack: [%s] scheduled rotation failed: %v\n", filename, err)
 				} else {
 					l.lastRotationTime = nextRotationAbsoluteTime
 				}
@@ -743,6 +744,7 @@ func (l *Logger) openNew(reasonForBackup string) error {
 	}
 
 	var oldInfo os.FileInfo
+	var newname string // set when an existing file is renamed; used for rollback
 	info, err := l.resolvedStat(name)
 	if err == nil {
 		oldInfo = info
@@ -754,7 +756,7 @@ func (l *Logger) openNew(reasonForBackup string) error {
 		rotationTimeForBackup := l.resolvedTimeNow()
 
 		// Build the rotated name from the immutable snapshot (no public field writes).
-		newname := backupNameWithResolved(
+		newname = backupNameWithResolved(
 			name,
 			l.resolvedLocalTime,
 			reasonForBackup,
@@ -774,14 +776,27 @@ func (l *Logger) openNew(reasonForBackup string) error {
 		return fmt.Errorf("failed to stat log file %s: %w", name, err)
 	}
 
+	// rollback renames the backup file back to `name` if creating the new log
+	// file fails, restoring a consistent state.
+	rollback := func() {
+		if newname != "" {
+			if rbErr := l.resolvedRename(newname, name); rbErr != nil {
+				fmt.Fprintf(os.Stderr, "timberjack: [%s] rotation rollback failed: %v\n", l.Filename, rbErr)
+			}
+		}
+	}
+
 	// Create and open the new log file at path `name`.
 	f, err := osOpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, finalMode)
 	if err != nil {
+		rollback()
 		return fmt.Errorf("can't open new logfile %s: %s", name, err)
 	}
 	// Apply the exact mode via chmod so the process umask cannot mask bits.
 	if err := osChmod(name, finalMode); err != nil {
 		closeErr := f.Close()
+		_ = osRemove(name) // remove the empty file so rollback can restore cleanly
+		rollback()
 		if closeErr != nil {
 			return fmt.Errorf("can't set mode on new logfile %s: %s (also failed to close: %v)", name, err, closeErr)
 		}
@@ -1237,6 +1252,18 @@ func (l *Logger) compressLogFile(src, dst string) error {
 		return fmt.Errorf("failed to stat source log file %s: %v", src, err)
 	}
 
+	// If a non-empty compressed destination already exists, a previous cycle
+	// compressed successfully but failed to remove the source. Skip recompression
+	// and only remove the source to avoid clobbering the valid compressed backup.
+	// A zero-byte dst (e.g. from a previously crashed mid-write) is treated as
+	// absent so that compression retries correctly.
+	if dstInfo, statErr := l.resolvedStat(dst); statErr == nil && dstInfo.Size() > 0 {
+		if err := l.resolvedRemove(src); err != nil {
+			return fmt.Errorf("failed to remove original source log file %s after compression: %w", src, err)
+		}
+		return nil
+	}
+
 	// Write to a temp file so that dst only appears once fully written (atomic publish).
 	tmpDst := dst + ".tmp"
 	dstFile, err := l.resolvedOpenFile(tmpDst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, srcInfo.Mode())
@@ -1361,8 +1388,12 @@ func trimCompressionSuffix(name string) string {
 }
 
 // sanitizeReason turns an arbitrary string into a safe, short tag for filenames.
-// Allowed: [a-z0-9_-]. Everything else becomes '-'. Collapses repeats, trims edges.
-// Returns empty string if nothing usable remains.
+// Allowed: [a-z0-9_]. Everything else (including '-') becomes '_'. Collapses
+// repeats, trims edges. Returns empty string if nothing usable remains.
+//
+// '-' is intentionally excluded: timeFromName uses strings.LastIndex("-") to
+// split the timestamp from the reason, so a '-' inside the reason would corrupt
+// parsing and make the backup invisible to MaxBackups/MaxAge cleanup.
 func sanitizeReason(s string) string {
 	s = strings.TrimSpace(strings.ToLower(s))
 	if s == "" {
@@ -1371,24 +1402,24 @@ func sanitizeReason(s string) string {
 	const max = 32
 
 	var b strings.Builder
-	lastDash := false
+	lastSep := false
 	for _, r := range s {
-		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_'
 		if ok {
 			b.WriteRune(r)
-			lastDash = (r == '-' || r == '_')
+			lastSep = (r == '_')
 		} else {
-			// replace anything else (including whitespace) with a single '-'
-			if !lastDash && b.Len() > 0 {
-				b.WriteByte('-')
-				lastDash = true
+			// replace anything else (including '-' and whitespace) with a single '_'
+			if !lastSep && b.Len() > 0 {
+				b.WriteByte('_')
+				lastSep = true
 			}
 		}
 		if b.Len() >= max {
 			break
 		}
 	}
-	out := strings.Trim(b.String(), "-_")
+	out := strings.Trim(b.String(), "_")
 	return out
 }
 
