@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.5](https://github.com/DeRuina/timberjack/compare/v1.4.4...v1.4.5) (2026-05-27)
+
+### Bug Fixes
+
+* re-release v1.4.4 as v1.4.5 to fix checksum mismatch in sum.golang.org caused by tag recreation; no code changes ([efcdf19](https://github.com/DeRuina/timberjack/commit/efcdf19))
+
+> **Note:** v1.4.4 should be skipped — its tag was force-pushed after `sum.golang.org` cached the original hash, causing `GOPROXY=direct` consumers to hit a permanent checksum mismatch error. v1.4.5 is identical in code and replaces it.
+
 ## [1.4.4](https://github.com/DeRuina/timberjack/compare/v1.4.3...v1.4.4) (2026-05-27)
 
 ### Bug Fixes
