@@ -1031,9 +1031,9 @@ func TestRotateAt(t *testing.T) {
 }
 
 func TestSortByFormatTimeEdgeCases(t *testing.T) {
-	t1 := time.Time{}                      // zero timestamp
-	t2 := time.Now()                       // valid timestamp
-	fi := dummyFileInfo{name: "dummy.log"} // minimal os.FileInfo impl
+	t1 := time.Time{} // zero timestamp
+	t2 := time.Now()  // valid timestamp
+	fi := "dummy.log" // backup file name
 
 	tests := []struct {
 		name  string
@@ -1063,18 +1063,6 @@ func TestSortByFormatTimeEdgeCases(t *testing.T) {
 		})
 	}
 }
-
-// dummyFileInfo is a stub for os.FileInfo
-type dummyFileInfo struct {
-	name string
-}
-
-func (d dummyFileInfo) Name() string       { return d.name }
-func (d dummyFileInfo) Size() int64        { return 0 }
-func (d dummyFileInfo) Mode() os.FileMode  { return 0o644 }
-func (d dummyFileInfo) ModTime() time.Time { return time.Now() }
-func (d dummyFileInfo) IsDir() bool        { return false }
-func (d dummyFileInfo) Sys() interface{}   { return nil }
 
 func TestCompressLogFile_SourceOpenError(t *testing.T) {
 	l := &Logger{}
