@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.7](https://github.com/DeRuina/timberjack/compare/v1.4.6...v1.4.7) (2026-08-24)
+
+### Bug Fixes
+
+* bump klauspost/compress to v1.18.7 to resolve GO-2026-5841 govulncheck noise ([#122](https://github.com/DeRuina/timberjack/issues/122)) ([aa922ff](https://github.com/DeRuina/timberjack/commit/aa922ff))
+
+> **Note:** this release raises the minimum required Go version from 1.21 to **1.24**, as all fixed versions of klauspost/compress require go >= 1.24. Consumers on Go 1.21–1.23 with the default `GOTOOLCHAIN=auto` will transparently download the newer toolchain; consumers who cannot upgrade can stay on v1.4.6.
+
 ## [1.4.6](https://github.com/DeRuina/timberjack/compare/v1.4.5...v1.4.6) (2026-07-31)
 
 ### Performance
