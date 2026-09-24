@@ -188,6 +188,16 @@ For example:
 /var/log/myapp/foo-2025-05-01T10-30-00.000-time.log.gz  (if compressed)
 ```
 
+If two rotations format to the same timestamp with the same reason (for example two size rotations within one second under a second-precision `BackupTimeFormat`), the later backup gets a numeric suffix on its reason instead of overwriting the earlier one:
+
+```
+/var/log/myapp/foo-2025-04-30T15-00-00-size.log
+/var/log/myapp/foo-2025-04-30T15-00-00-size_1.log
+/var/log/myapp/foo-2025-04-30T15-00-00-size_2.log
+```
+
+Backups that share a timestamp count as a single entry for `MaxBackups` and are removed together.
+
 If you prefer the extension to stay attached to the live name (better shell TAB completion),
 
 set `AppendTimeAfterExt: true`:

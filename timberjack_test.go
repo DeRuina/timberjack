@@ -317,9 +317,11 @@ func TestMaxBackups(t *testing.T) {
 	// this will use the new fake time
 	fourthFilename := backupFileWithReason(dir, "size")
 
-	// Create a log file that is/was being compressed - this should
-	// not be counted since both the compressed and the uncompressed
-	// log files still exist.
+	// Create a compressed backup at the name the next rotation would use.
+	// The rotation must not reuse that base name (the mill would otherwise
+	// treat the fresh backup as an already-compressed leftover and delete it),
+	// so the new backup gets a "_1" suffix. Both files share a timestamp and
+	// therefore count as a single backup for MaxBackups.
 	compLogFile := fourthFilename + compressSuffix
 	err = os.WriteFile(compLogFile, []byte("compress"), 0o644)
 	isNil(err, t)
@@ -330,8 +332,9 @@ func TestMaxBackups(t *testing.T) {
 	isNil(err, t)
 	equals(len(b4), n, t)
 
+	fourthFilename = backupFileWithReason(dir, "size_1")
 	existsWithContent(fourthFilename, b3, t)
-	existsWithContent(fourthFilename+compressSuffix, []byte("compress"), t)
+	existsWithContent(compLogFile, []byte("compress"), t)
 
 	// we need to wait a little bit since the files get deleted on a different
 	// goroutine.
@@ -3581,4 +3584,242 @@ func TestOpenNew_RollsBackRenameOnCreateFailure(t *testing.T) {
 			t.Errorf("unexpected file left after rollback: %s", e.Name())
 		}
 	}
+}
+
+// Issue #123: two rotations that share a formatted timestamp and a reason used
+// to produce the same backup filename, so os.Rename silently replaced the
+// earlier backup. The logger must instead pick a unique name.
+func TestRotate_SameTimestampAndReason_DoesNotOverwriteBackup(t *testing.T) {
+	defer leaktest.Check(t)()
+	currentTime = fakeTime
+	megabyte = 1024 * 1024
+
+	dir := makeTempDir("TestRotate_SameTimestampAndReason", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir)
+	l := &Logger{Filename: filename, MaxSize: 100}
+	defer l.Close()
+
+	// The fake clock is never advanced, so every rotation formats to the same
+	// timestamp and would previously collide on "-size.log".
+	segments := [][]byte{[]byte("first"), []byte("second"), []byte("third")}
+	for _, seg := range segments {
+		n, err := l.Write(seg)
+		isNil(err, t)
+		equals(len(seg), n, t)
+		isNil(l.Rotate(), t)
+	}
+	<-time.After(20 * time.Millisecond)
+
+	existsWithContent(backupFileWithReason(dir, "size"), segments[0], t)
+	existsWithContent(backupFileWithReason(dir, "size_1"), segments[1], t)
+	existsWithContent(backupFileWithReason(dir, "size_2"), segments[2], t)
+	existsWithContent(filename, []byte{}, t)
+	fileCount(dir, 4, t)
+}
+
+// Mirrors the reproducer from issue #123: automatic size rotations within one
+// timestamp bucket must each keep their own backup.
+func TestAutoRotate_SameTimestamp_DoesNotOverwriteBackup(t *testing.T) {
+	defer leaktest.Check(t)()
+	currentTime = fakeTime
+	megabyte = 1
+
+	dir := makeTempDir("TestAutoRotate_SameTimestamp", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir)
+	l := &Logger{Filename: filename, MaxSize: 10}
+	defer l.Close()
+
+	segA := bytes.Repeat([]byte{'A'}, 6)
+	segB := bytes.Repeat([]byte{'B'}, 6)
+	segC := bytes.Repeat([]byte{'C'}, 6)
+	for _, seg := range [][]byte{segA, segB, segC} {
+		n, err := l.Write(seg)
+		isNil(err, t)
+		equals(len(seg), n, t)
+	}
+	<-time.After(20 * time.Millisecond)
+
+	existsWithContent(backupFileWithReason(dir, "size"), segA, t)
+	existsWithContent(backupFileWithReason(dir, "size_1"), segB, t)
+	existsWithContent(filename, segC, t)
+	fileCount(dir, 3, t)
+}
+
+func TestRotate_SameTimestamp_AppendTimeAfterExt_DoesNotOverwriteBackup(t *testing.T) {
+	defer leaktest.Check(t)()
+	currentTime = fakeTime
+	megabyte = 1024 * 1024
+
+	dir := makeTempDir("TestRotate_SameTimestamp_AfterExt", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir)
+	l := &Logger{Filename: filename, MaxSize: 100, AppendTimeAfterExt: true}
+	defer l.Close()
+
+	first, second := []byte("first"), []byte("second")
+	for _, seg := range [][]byte{first, second} {
+		_, err := l.Write(seg)
+		isNil(err, t)
+		isNil(l.RotateWithReason("manual"), t)
+	}
+	<-time.After(20 * time.Millisecond)
+
+	ts := fakeTime().UTC().Format(backupTimeFormat)
+	existsWithContent(filepath.Join(dir, "foobar.log-"+ts+"-manual"), first, t)
+	existsWithContent(filepath.Join(dir, "foobar.log-"+ts+"-manual_1"), second, t)
+	fileCount(dir, 3, t)
+}
+
+// A backup that has already been compressed occupies its name too: rotating
+// onto "<ts>-size.log" while "<ts>-size.log.gz" exists must not reuse the base
+// name, otherwise the mill would later collide when compressing.
+func TestRotate_SameTimestamp_ExistingCompressedBackup_IsRespected(t *testing.T) {
+	defer leaktest.Check(t)()
+	currentTime = fakeTime
+	megabyte = 1024 * 1024
+
+	dir := makeTempDir("TestRotate_SameTimestamp_Compressed", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir)
+	compressed := backupFileWithReason(dir, "size") + compressSuffix
+	isNil(os.WriteFile(compressed, []byte("gzipped-old-backup"), 0o644), t)
+
+	l := &Logger{Filename: filename, MaxSize: 100}
+	defer l.Close()
+
+	data := []byte("fresh")
+	_, err := l.Write(data)
+	isNil(err, t)
+	isNil(l.Rotate(), t)
+	<-time.After(20 * time.Millisecond)
+
+	existsWithContent(compressed, []byte("gzipped-old-backup"), t)
+	existsWithContent(backupFileWithReason(dir, "size_1"), data, t)
+	fileCount(dir, 3, t)
+}
+
+// Suffixed backup names must still be recognised by cleanup. MaxBackups counts
+// distinct timestamps, so all backups sharing one rotation instant form a single
+// group that is removed together once newer backups push it out.
+func TestRotate_SameTimestamp_SuffixedBackupsAreCleanedUp(t *testing.T) {
+	defer leaktest.Check(t)()
+	currentTime = fakeTime
+	megabyte = 1024 * 1024
+
+	dir := makeTempDir("TestRotate_SameTimestamp_Cleanup", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir)
+	l := &Logger{Filename: filename, MaxSize: 100, MaxBackups: 1}
+	defer l.Close()
+
+	// Three colliding rotations at the same instant.
+	for _, seg := range [][]byte{[]byte("first"), []byte("second"), []byte("third")} {
+		_, err := l.Write(seg)
+		isNil(err, t)
+		isNil(l.Rotate(), t)
+	}
+	<-time.After(20 * time.Millisecond)
+	colliding := []string{
+		backupFileWithReason(dir, "size"),
+		backupFileWithReason(dir, "size_1"),
+		backupFileWithReason(dir, "size_2"),
+	}
+	for _, f := range colliding {
+		exists(f, t)
+	}
+	fileCount(dir, 4, t)
+
+	// A later rotation makes the whole earlier group the oldest timestamp.
+	newFakeTime()
+	_, err := l.Write([]byte("fourth"))
+	isNil(err, t)
+	isNil(l.Rotate(), t)
+	<-time.After(50 * time.Millisecond)
+
+	for _, f := range colliding {
+		notExist(f, t)
+	}
+	existsWithContent(backupFileWithReason(dir, "size"), []byte("fourth"), t)
+	fileCount(dir, 2, t)
+}
+
+// If no free name can be found the rotation must fail loudly rather than
+// overwrite an existing backup.
+func TestRotate_SameTimestamp_NoFreeName_ReturnsError(t *testing.T) {
+	defer leaktest.Check(t)()
+	currentTime = fakeTime
+	megabyte = 1024 * 1024
+
+	origMax := maxBackupNameAttempts
+	maxBackupNameAttempts = 3
+	defer func() { maxBackupNameAttempts = origMax }()
+
+	dir := makeTempDir("TestRotate_SameTimestamp_NoFreeName", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir)
+	l := &Logger{Filename: filename, MaxSize: 100}
+	defer l.Close()
+
+	data := []byte("keep-me")
+	_, err := l.Write(data)
+	isNil(err, t)
+
+	// Pretend every path exists: stat always answers with the live file's info.
+	l.mu.Lock()
+	l.resolvedStat = func(string) (os.FileInfo, error) { return os.Stat(filename) }
+	l.mu.Unlock()
+
+	err = l.Rotate()
+	notNil(err, t)
+	if !strings.Contains(err.Error(), "unique backup name") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Nothing was renamed or truncated.
+	existsWithContent(filename, data, t)
+	fileCount(dir, 1, t)
+}
+
+// The mill must compress suffixed backups like any other backup.
+func TestRotate_SameTimestamp_SuffixedBackupsAreCompressed(t *testing.T) {
+	defer leaktest.Check(t)()
+	currentTime = fakeTime
+	megabyte = 1024 * 1024
+
+	dir := makeTempDir("TestRotate_SameTimestamp_Compress", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir)
+	l := &Logger{Filename: filename, MaxSize: 100, Compression: "gzip"}
+	defer l.Close()
+
+	first, second := []byte("first"), []byte("second")
+	for _, seg := range [][]byte{first, second} {
+		_, err := l.Write(seg)
+		isNil(err, t)
+		isNil(l.Rotate(), t)
+	}
+	<-time.After(300 * time.Millisecond)
+
+	for name, want := range map[string][]byte{"size": first, "size_1": second} {
+		gz := backupFileWithReason(dir, name) + compressSuffix
+		exists(gz, t)
+		notExist(backupFileWithReason(dir, name), t)
+		f, err := os.Open(gz)
+		isNil(err, t)
+		r, err := gzip.NewReader(f)
+		isNil(err, t)
+		got, err := io.ReadAll(r)
+		isNil(err, t)
+		f.Close()
+		equals(string(want), string(got), t)
+	}
+	fileCount(dir, 3, t)
 }
