@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.8](https://github.com/DeRuina/timberjack/compare/v1.4.7...v1.4.8) (2026-09-24)
+
+### Bug Fixes
+
+* never overwrite an existing backup when two rotations share a timestamp and reason; the later backup now gets a `_1`, `_2`, ... suffix on its reason, and an already-compressed backup at the target name is respected ([#123](https://github.com/DeRuina/timberjack/issues/123), [#124](https://github.com/DeRuina/timberjack/pull/124)) ([dc255b3](https://github.com/DeRuina/timberjack/commit/dc255b30711ad45dfbb218e0aac212a16059acdd))
+
 ## [1.4.7](https://github.com/DeRuina/timberjack/compare/v1.4.6...v1.4.7) (2026-08-24)
 
 ### Bug Fixes
