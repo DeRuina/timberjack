@@ -207,10 +207,10 @@ type Logger struct {
 	isClosed                   uint32
 
 	// snapshots of globals to avoid races
-	resolvedTimeNow func() time.Time
-	resolvedStat    func(string) (os.FileInfo, error)
-	resolvedRename  func(string, string) error
-	resolvedRemove  func(string) error
+	resolvedTimeNow  func() time.Time
+	resolvedStat     func(string) (os.FileInfo, error)
+	resolvedRename   func(string, string) error
+	resolvedRemove   func(string) error
 	resolvedOpenFile func(string, int, os.FileMode) (*os.File, error)
 }
 
@@ -229,6 +229,11 @@ var (
 	osRename = os.Rename
 
 	osRemove = os.Remove
+
+	// maxBackupNameAttempts bounds how many "_N" suffixes openNew tries when a
+	// backup name is already taken before giving up with an error. It is a
+	// variable so tests can lower it.
+	maxBackupNameAttempts = 10000
 
 	osOpenFile = os.OpenFile
 
@@ -725,6 +730,47 @@ func backupNameWithResolved(name string, local bool, reason string, t time.Time,
 	return filepath.Join(dir, fmt.Sprintf("%s-%s-%s%s", prefix, ts, reason, ext))
 }
 
+// uniqueBackupName returns the backup path for a rotation of name at time t with
+// the given reason, guaranteeing that no file already occupies it.
+//
+// os.Rename replaces an existing destination on every platform, so two rotations
+// that format to the same timestamp with the same reason (for example two size
+// rotations within one second under a second-precision BackupTimeFormat) would
+// otherwise silently destroy the earlier backup. When the natural name is taken
+// the reason is suffixed with "_1", "_2", ... until a free name is found. The
+// suffix lives inside the reason segment, so timeFromName still parses the
+// timestamp and cleanup keeps working. A compressed backup (".gz"/".zst") also
+// counts as occupying its base name so the mill never has to overwrite one.
+//
+// If maxBackupNameAttempts candidates are all taken an error is returned; losing
+// a rotation is preferable to losing a backup.
+// It expects l.mu to be held by the caller and the config to be resolved.
+func (l *Logger) uniqueBackupName(name, reason string, t time.Time) (string, error) {
+	candidate := backupNameWithResolved(name, l.resolvedLocalTime, reason, t, l.resolvedBackupLayout, l.resolvedAppendAfterExt)
+	if !l.backupPathTaken(candidate) {
+		return candidate, nil
+	}
+	for i := 1; i <= maxBackupNameAttempts; i++ {
+		suffixed := backupNameWithResolved(name, l.resolvedLocalTime, fmt.Sprintf("%s_%d", reason, i), t, l.resolvedBackupLayout, l.resolvedAppendAfterExt)
+		if !l.backupPathTaken(suffixed) {
+			return suffixed, nil
+		}
+	}
+	return "", fmt.Errorf("can't find a unique backup name for %s: %q and %d suffixed variants already exist", name, candidate, maxBackupNameAttempts)
+}
+
+// backupPathTaken reports whether path, or a compressed variant of it, exists.
+// Only a successful stat counts as taken; any error (including permission
+// problems) leaves the decision to the subsequent rename, which will surface it.
+func (l *Logger) backupPathTaken(path string) bool {
+	for _, p := range []string{path, path + compressSuffix, path + zstdSuffix} {
+		if _, err := l.resolvedStat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // openNew creates a new log file for writing.
 // If an old log file already exists, it is moved aside by renaming it with a timestamp.
 // This method assumes that l.mu is held and the old file (if any) has already been closed.
@@ -755,15 +801,13 @@ func (l *Logger) openNew(reasonForBackup string) error {
 
 		rotationTimeForBackup := l.resolvedTimeNow()
 
-		// Build the rotated name from the immutable snapshot (no public field writes).
-		newname = backupNameWithResolved(
-			name,
-			l.resolvedLocalTime,
-			reasonForBackup,
-			rotationTimeForBackup,
-			l.resolvedBackupLayout,
-			l.resolvedAppendAfterExt,
-		)
+		// Build the rotated name from the immutable snapshot (no public field writes),
+		// making sure it does not clobber a backup from an earlier rotation that
+		// formatted to the same timestamp and reason (issue #123).
+		newname, err = l.uniqueBackupName(name, reasonForBackup, rotationTimeForBackup)
+		if err != nil {
+			return err
+		}
 
 		if errRename := l.resolvedRename(name, newname); errRename != nil {
 			return fmt.Errorf("can't rename log file: %s", errRename)
