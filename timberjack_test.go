@@ -3786,3 +3786,40 @@ func TestRotate_SameTimestamp_NoFreeName_ReturnsError(t *testing.T) {
 	existsWithContent(filename, data, t)
 	fileCount(dir, 1, t)
 }
+
+// The mill must compress suffixed backups like any other backup.
+func TestRotate_SameTimestamp_SuffixedBackupsAreCompressed(t *testing.T) {
+	defer leaktest.Check(t)()
+	currentTime = fakeTime
+	megabyte = 1024 * 1024
+
+	dir := makeTempDir("TestRotate_SameTimestamp_Compress", t)
+	defer os.RemoveAll(dir)
+
+	filename := logFile(dir)
+	l := &Logger{Filename: filename, MaxSize: 100, Compression: "gzip"}
+	defer l.Close()
+
+	first, second := []byte("first"), []byte("second")
+	for _, seg := range [][]byte{first, second} {
+		_, err := l.Write(seg)
+		isNil(err, t)
+		isNil(l.Rotate(), t)
+	}
+	<-time.After(300 * time.Millisecond)
+
+	for name, want := range map[string][]byte{"size": first, "size_1": second} {
+		gz := backupFileWithReason(dir, name) + compressSuffix
+		exists(gz, t)
+		notExist(backupFileWithReason(dir, name), t)
+		f, err := os.Open(gz)
+		isNil(err, t)
+		r, err := gzip.NewReader(f)
+		isNil(err, t)
+		got, err := io.ReadAll(r)
+		isNil(err, t)
+		f.Close()
+		equals(string(want), string(got), t)
+	}
+	fileCount(dir, 3, t)
+}
