@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.9](https://github.com/DeRuina/timberjack/compare/v1.4.8...v1.4.9) (2026-10-17)
+
+### Features
+
+* add a `timberjack_nozstd` build tag; building with `-tags timberjack_nozstd` leaves `github.com/klauspost/compress` out of the binary, and `Compression: "zstd"` falls back to gzip with a warning ([#125](https://github.com/DeRuina/timberjack/issues/125), [#126](https://github.com/DeRuina/timberjack/pull/126)) ([87ba0f0](https://github.com/DeRuina/timberjack/commit/87ba0f0153ea474980e708bd6e3a948387284a28))
+
 ## [1.4.8](https://github.com/DeRuina/timberjack/compare/v1.4.7...v1.4.8) (2026-09-24)
 
 ### Bug Fixes
