@@ -40,8 +40,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/klauspost/compress/zstd"
 )
 
 const (
@@ -127,6 +125,7 @@ type Logger struct {
 
 	// Compression selects the algorithm. If empty, legacy Compress is used.
 	// Allowed values: "none", "gzip", "zstd". Unknown => "none" (with a warning).
+	// When built with -tags timberjack_nozstd, "zstd" => "gzip" (with a warning).
 	Compression string `json:"compression,omitempty" yaml:"compression,omitempty"`
 
 	// RotationInterval is the maximum duration between log rotations.
@@ -1324,7 +1323,7 @@ func (l *Logger) compressLogFile(src, dst string) error {
 	// Choose compression algorithm based on dst suffix.
 	// Default to gzip if no recognized suffix.
 	if strings.HasSuffix(dst, zstdSuffix) {
-		enc, err := zstd.NewWriter(dstFile)
+		enc, err := newZstdWriter(dstFile)
 		if err != nil { // Error creating zstd writer
 			_ = dstFile.Close()
 			_ = os.Remove(tmpDst)
@@ -1391,10 +1390,17 @@ func (l *Logger) compressLogFile(src, dst string) error {
 // effectiveCompression returns "none" | "gzip" | "zstd".
 // Rule: if Compression is set, it wins; if empty, fallback to legacy Compress.
 // Unknown strings default to "none" (and warn once).
+// "zstd" falls back to "gzip" (with a warning) when built with timberjack_nozstd.
 func (l *Logger) effectiveCompression() string {
 	alg := strings.ToLower(strings.TrimSpace(l.Compression))
 	switch alg {
-	case "gzip", "zstd":
+	case "gzip":
+		return alg
+	case "zstd":
+		if !zstdAvailable {
+			fmt.Fprintf(os.Stderr, "timberjack: zstd not compiled in (timberjack_nozstd) — using gzip\n")
+			return "gzip"
+		}
 		return alg
 	case "none", "":
 		if alg == "" && l.Compress {

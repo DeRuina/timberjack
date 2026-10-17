@@ -28,3 +28,6 @@ jobs:
 
     - name: Run tests
       run: go test ./...
+
+    - name: Run tests without zstd
+      run: go test -tags timberjack_nozstd ./...
