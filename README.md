@@ -228,6 +228,7 @@ foo-2025-05-01T10-30-00.000-reload-now-v2.log
 - **Precedence**: If Compression is set, it **wins**. If it’s empty, legacy `Compress: true` means gzip; else no compression.
 - Outputs use `.gz` or `.zst` suffix accordingly.
 - Compression happens after rotation in a background goroutine.
+- **Dropping zstd**: build with `-tags timberjack_nozstd` to leave `github.com/klauspost/compress` out of your binary. `Compression: "zstd"` then falls back to gzip (with a warning on stderr). Existing `.zst` backups are still recognized for cleanup.
 - **Deprecation**: `Compress` is kept only for backward compatibility with old configs. It’s ignored when `Compression` is set. **It will be removed in v2**.
 
 ### Cleanup
