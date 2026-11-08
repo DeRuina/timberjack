@@ -1971,7 +1971,7 @@ func TestScheduledMinuteRotationFails(t *testing.T) {
 	l.scheduledRotationWg.Wait()
 }
 
-func TestRunScheduledRotations_CannotFindNextSlot(t *testing.T) {
+func TestRunScheduledRotations_FarFutureClockQuits(t *testing.T) {
 	orig := currentTime
 	defer func() { currentTime = orig }()
 	currentTime = func() time.Time { return time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC) }
@@ -2381,19 +2381,19 @@ func TestFractionalSecondDigits(t *testing.T) {
 		layout   string
 		expected int
 	}{
-		{"2006-01-02 15:04:05", 0},            // no dot
-		{"2006-01-02 15:04:05.000", 3},        // fractional seconds, 3 digits
-		{"2006-01-02 15:04:05.000000", 6},     // 6 digits
-		{"2006-01-02 15:04:05.999999999", 9},  // 9 digits (trailing-zero-trimmed)
-		{"2006-01-02 15:04:05,000", 3},        // comma is also a valid fractional separator
-		{"2006-01-02 15:04:05.12345abc", 0},   // '.' not followed by a 0/9 run -> separator, not fractional
-		{"2006-01-02 15:04:05.", 0},           // dot but no digits
-		{"2006-01-02_15.04.05", 0},            // '.' used as a time separator
-		{"2006.01.02-15-04-05", 0},            // '.' used as a date separator
-		{".1234", 0},                          // '.' followed by non 0/9 digit
-		{"prefix.987suffix", 0},               // not a fractional-second run
-		{"no_digits_after_dot.", 0},           // dot at end
-		{"no.dot.in.string", 0},               // dots followed by letters
+		{"2006-01-02 15:04:05", 0},           // no dot
+		{"2006-01-02 15:04:05.000", 3},       // fractional seconds, 3 digits
+		{"2006-01-02 15:04:05.000000", 6},    // 6 digits
+		{"2006-01-02 15:04:05.999999999", 9}, // 9 digits (trailing-zero-trimmed)
+		{"2006-01-02 15:04:05,000", 3},       // comma is also a valid fractional separator
+		{"2006-01-02 15:04:05.12345abc", 0},  // '.' not followed by a 0/9 run -> separator, not fractional
+		{"2006-01-02 15:04:05.", 0},          // dot but no digits
+		{"2006-01-02_15.04.05", 0},           // '.' used as a time separator
+		{"2006.01.02-15-04-05", 0},           // '.' used as a date separator
+		{".1234", 0},                         // '.' followed by non 0/9 digit
+		{"prefix.987suffix", 0},              // not a fractional-second run
+		{"no_digits_after_dot.", 0},          // dot at end
+		{"no.dot.in.string", 0},              // dots followed by letters
 	}
 
 	for _, test := range tests {
@@ -3244,10 +3244,10 @@ func TestSanitizeReason_UnderscoreBeforeInvalidChar(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"my_ reason", "my_reason"},      // '_' then space must not yield "my_-reason"
-		{"a_ b", "a_b"},                  // same pattern, shorter
+		{"my_ reason", "my_reason"}, // '_' then space must not yield "my_-reason"
+		{"a_ b", "a_b"},             // same pattern, shorter
 		{"prefix_ suffix", "prefix_suffix"},
-		{"x_y z", "x_y_z"},              // valid "_y" then space — underscore before "z" is correct
+		{"x_y z", "x_y_z"}, // valid "_y" then space — underscore before "z" is correct
 	}
 	for _, tc := range cases {
 		got := sanitizeReason(tc.input)
@@ -3661,4 +3661,76 @@ func TestRotate_SameTimestamp_SuffixedBackupsAreCompressed(t *testing.T) {
 		equals(string(want), string(got), t)
 	}
 	fileCount(dir, 3, t)
+}
+
+// TestNextScheduledRotation covers the slot calculation used by
+// runScheduledRotations, including days that are not 24 hours long (issue #127).
+func TestNextScheduledRotation(t *testing.T) {
+	paris, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		t.Skipf("Europe/Paris not available: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		now   time.Time
+		slots []rotateAt
+		loc   *time.Location
+		want  time.Time
+	}{
+		{
+			name:  "later slot same day",
+			now:   time.Date(2026, 6, 1, 10, 35, 0, 0, time.UTC),
+			slots: []rotateAt{{0, 0}, {12, 0}},
+			loc:   time.UTC,
+			want:  time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			name:  "wraps to next day",
+			now:   time.Date(2026, 6, 1, 23, 0, 0, 0, time.UTC),
+			slots: []rotateAt{{0, 0}, {12, 0}},
+			loc:   time.UTC,
+			want:  time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:  "slot equal to now is skipped",
+			now:   time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			slots: []rotateAt{{12, 0}},
+			loc:   time.UTC,
+			want:  time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			// 25-hour day: the next midnight is 24h59m59s away.
+			name:  "DST end, midnight after midnight",
+			now:   time.Date(2026, 10, 25, 0, 0, 1, 0, paris),
+			slots: []rotateAt{{0, 0}},
+			loc:   paris,
+			want:  time.Date(2026, 10, 26, 0, 0, 0, 0, paris),
+		},
+		{
+			name:  "DST end, minute marks in first hour",
+			now:   time.Date(2026, 10, 25, 0, 30, 1, 0, paris),
+			slots: []rotateAt{{0, 0}, {0, 30}},
+			loc:   paris,
+			want:  time.Date(2026, 10, 26, 0, 0, 0, 0, paris),
+		},
+		{
+			// 02:30 does not exist on 2026-03-29 and normalizes past 03:00;
+			// the earliest real instant (03:00) must win over sorted order.
+			name:  "DST start, nonexistent slot does not shadow later one",
+			now:   time.Date(2026, 3, 29, 1, 59, 0, 0, paris),
+			slots: []rotateAt{{2, 30}, {3, 0}},
+			loc:   paris,
+			want:  time.Date(2026, 3, 29, 3, 0, 0, 0, paris),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := nextScheduledRotation(tt.now, tt.slots, tt.loc)
+			if !got.Equal(tt.want) {
+				t.Errorf("nextScheduledRotation(%v, %v) = %v, want %v", tt.now, tt.slots, got, tt.want)
+			}
+		})
+	}
 }
