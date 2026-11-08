@@ -498,6 +498,29 @@ func (l *Logger) ensureScheduledRotationLoopRunning() {
 	})
 }
 
+// nextScheduledRotation returns the earliest slot in loc that is strictly after now.
+// slots must be non-empty.
+//
+// Candidates are built per calendar day (today and tomorrow) rather than by adding
+// hours, because local days are not always 24 hours long: on the day DST ends a
+// 00:00 slot is 25 hours after the previous one. Every slot exists again tomorrow,
+// so two days always contain the answer. The minimum is taken instead of the first
+// match in sorted order because time.Date normalizes slots that fall in a DST gap
+// (e.g. 02:30 becomes 03:30), which can move them past later slots.
+func nextScheduledRotation(now time.Time, slots []rotateAt, loc *time.Location) time.Time {
+	nowInLocation := now.In(loc)
+	var next time.Time
+	for dayOffset := range 2 {
+		for _, mark := range slots {
+			candidate := time.Date(nowInLocation.Year(), nowInLocation.Month(), nowInLocation.Day()+dayOffset, mark[0], mark[1], 0, 0, loc)
+			if candidate.After(now) && (next.IsZero() || candidate.Before(next)) {
+				next = candidate
+			}
+		}
+	}
+	return next
+}
+
 // runScheduledRotations is the main loop for handling rotations at specific minute marks
 // as defined in RotateAtMinutes. It runs in a separate goroutine.
 func (l *Logger) runScheduledRotations(quit <-chan struct{}, slots []rotateAt, loc *time.Location, nowFn func() time.Time, filename string) {
@@ -515,41 +538,7 @@ func (l *Logger) runScheduledRotations(quit <-chan struct{}, slots []rotateAt, l
 
 	for {
 		now := nowFn()
-		nowInLocation := now.In(loc)
-		nextRotationAbsoluteTime := time.Time{}
-		foundNextSlot := false
-
-	determineNextSlot:
-		// Calculate the next rotation time based on the current time and processedRotateAt.
-		// Iterate through the current hour, then subsequent hours (up to 24h ahead for robustness
-		// against system sleep or large clock jumps).
-		for hourOffset := 0; hourOffset <= 24; hourOffset++ {
-			// Base time for the hour we are checking (e.g., if now is 10:35, current hour base is 10:00)
-			hourToCheck := time.Date(nowInLocation.Year(), nowInLocation.Month(), nowInLocation.Day(), nowInLocation.Hour(), 0, 0, 0, loc).Add(time.Duration(hourOffset) * time.Hour)
-
-			for _, mark := range slots {
-				candidateTime := time.Date(hourToCheck.Year(), hourToCheck.Month(), hourToCheck.Day(), mark[0], mark[1], 0, 0, loc)
-
-				if candidateTime.After(now) { // Found the earliest future slot
-					nextRotationAbsoluteTime = candidateTime
-					foundNextSlot = true
-					break determineNextSlot // Exit both loops
-				}
-			}
-		}
-
-		if !foundNextSlot {
-			// This should ideally not happen if processedRotateAt is valid and non-empty.
-			// Could occur if currentTime() is unreliable or jumps massively backward.
-			// Log an error and retry calculation after a fallback delay.
-			fmt.Fprintf(os.Stderr, "timberjack: [%s] Could not determine next scheduled rotation time for %v with marks %v. Retrying calculation in 1 minute.\n", filename, nowInLocation, slots)
-			select {
-			case <-time.After(time.Minute): // Wait a bit before retrying calculation
-				continue // Restart the outer loop to recalculate
-			case <-quit:
-				return
-			}
-		}
+		nextRotationAbsoluteTime := nextScheduledRotation(now, slots, loc)
 
 		sleepDuration := nextRotationAbsoluteTime.Sub(now)
 		timer.Reset(sleepDuration)

@@ -1971,7 +1971,7 @@ func TestScheduledMinuteRotationFails(t *testing.T) {
 	l.scheduledRotationWg.Wait()
 }
 
-func TestRunScheduledRotations_CannotFindNextSlot(t *testing.T) {
+func TestRunScheduledRotations_FarFutureClockQuits(t *testing.T) {
 	orig := currentTime
 	defer func() { currentTime = orig }()
 	currentTime = func() time.Time { return time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC) }
@@ -3661,4 +3661,76 @@ func TestRotate_SameTimestamp_SuffixedBackupsAreCompressed(t *testing.T) {
 		equals(string(want), string(got), t)
 	}
 	fileCount(dir, 3, t)
+}
+
+// TestNextScheduledRotation covers the slot calculation used by
+// runScheduledRotations, including days that are not 24 hours long (issue #127).
+func TestNextScheduledRotation(t *testing.T) {
+	paris, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		t.Skipf("Europe/Paris not available: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		now   time.Time
+		slots []rotateAt
+		loc   *time.Location
+		want  time.Time
+	}{
+		{
+			name:  "later slot same day",
+			now:   time.Date(2026, 6, 1, 10, 35, 0, 0, time.UTC),
+			slots: []rotateAt{{0, 0}, {12, 0}},
+			loc:   time.UTC,
+			want:  time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			name:  "wraps to next day",
+			now:   time.Date(2026, 6, 1, 23, 0, 0, 0, time.UTC),
+			slots: []rotateAt{{0, 0}, {12, 0}},
+			loc:   time.UTC,
+			want:  time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:  "slot equal to now is skipped",
+			now:   time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			slots: []rotateAt{{12, 0}},
+			loc:   time.UTC,
+			want:  time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			// 25-hour day: the next midnight is 24h59m59s away.
+			name:  "DST end, midnight after midnight",
+			now:   time.Date(2026, 10, 25, 0, 0, 1, 0, paris),
+			slots: []rotateAt{{0, 0}},
+			loc:   paris,
+			want:  time.Date(2026, 10, 26, 0, 0, 0, 0, paris),
+		},
+		{
+			name:  "DST end, minute marks in first hour",
+			now:   time.Date(2026, 10, 25, 0, 30, 1, 0, paris),
+			slots: []rotateAt{{0, 0}, {0, 30}},
+			loc:   paris,
+			want:  time.Date(2026, 10, 26, 0, 0, 0, 0, paris),
+		},
+		{
+			// 02:30 does not exist on 2026-03-29 and normalizes past 03:00;
+			// the earliest real instant (03:00) must win over sorted order.
+			name:  "DST start, nonexistent slot does not shadow later one",
+			now:   time.Date(2026, 3, 29, 1, 59, 0, 0, paris),
+			slots: []rotateAt{{2, 30}, {3, 0}},
+			loc:   paris,
+			want:  time.Date(2026, 3, 29, 3, 0, 0, 0, paris),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := nextScheduledRotation(tt.now, tt.slots, tt.loc)
+			if !got.Equal(tt.want) {
+				t.Errorf("nextScheduledRotation(%v, %v) = %v, want %v", tt.now, tt.slots, got, tt.want)
+			}
+		})
+	}
 }
