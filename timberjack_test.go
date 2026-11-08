@@ -2381,19 +2381,19 @@ func TestFractionalSecondDigits(t *testing.T) {
 		layout   string
 		expected int
 	}{
-		{"2006-01-02 15:04:05", 0},            // no dot
-		{"2006-01-02 15:04:05.000", 3},        // fractional seconds, 3 digits
-		{"2006-01-02 15:04:05.000000", 6},     // 6 digits
-		{"2006-01-02 15:04:05.999999999", 9},  // 9 digits (trailing-zero-trimmed)
-		{"2006-01-02 15:04:05,000", 3},        // comma is also a valid fractional separator
-		{"2006-01-02 15:04:05.12345abc", 0},   // '.' not followed by a 0/9 run -> separator, not fractional
-		{"2006-01-02 15:04:05.", 0},           // dot but no digits
-		{"2006-01-02_15.04.05", 0},            // '.' used as a time separator
-		{"2006.01.02-15-04-05", 0},            // '.' used as a date separator
-		{".1234", 0},                          // '.' followed by non 0/9 digit
-		{"prefix.987suffix", 0},               // not a fractional-second run
-		{"no_digits_after_dot.", 0},           // dot at end
-		{"no.dot.in.string", 0},               // dots followed by letters
+		{"2006-01-02 15:04:05", 0},           // no dot
+		{"2006-01-02 15:04:05.000", 3},       // fractional seconds, 3 digits
+		{"2006-01-02 15:04:05.000000", 6},    // 6 digits
+		{"2006-01-02 15:04:05.999999999", 9}, // 9 digits (trailing-zero-trimmed)
+		{"2006-01-02 15:04:05,000", 3},       // comma is also a valid fractional separator
+		{"2006-01-02 15:04:05.12345abc", 0},  // '.' not followed by a 0/9 run -> separator, not fractional
+		{"2006-01-02 15:04:05.", 0},          // dot but no digits
+		{"2006-01-02_15.04.05", 0},           // '.' used as a time separator
+		{"2006.01.02-15-04-05", 0},           // '.' used as a date separator
+		{".1234", 0},                         // '.' followed by non 0/9 digit
+		{"prefix.987suffix", 0},              // not a fractional-second run
+		{"no_digits_after_dot.", 0},          // dot at end
+		{"no.dot.in.string", 0},              // dots followed by letters
 	}
 
 	for _, test := range tests {
@@ -3244,10 +3244,10 @@ func TestSanitizeReason_UnderscoreBeforeInvalidChar(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"my_ reason", "my_reason"},      // '_' then space must not yield "my_-reason"
-		{"a_ b", "a_b"},                  // same pattern, shorter
+		{"my_ reason", "my_reason"}, // '_' then space must not yield "my_-reason"
+		{"a_ b", "a_b"},             // same pattern, shorter
 		{"prefix_ suffix", "prefix_suffix"},
-		{"x_y z", "x_y_z"},              // valid "_y" then space — underscore before "z" is correct
+		{"x_y z", "x_y_z"}, // valid "_y" then space — underscore before "z" is correct
 	}
 	for _, tc := range cases {
 		got := sanitizeReason(tc.input)
