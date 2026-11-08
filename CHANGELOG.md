@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.10](https://github.com/DeRuina/timberjack/compare/v1.4.9...v1.4.10) (2026-11-08)
+
+### Bug Fixes
+
+* `RotateAt` now finds the next slot on days that are not 24 hours long; on the day DST ends, a 00:xx rotation no longer prints "Could not determine next scheduled rotation time" to stderr every minute until 01:00, and on the day DST starts a nonexistent slot (e.g. `02:30`) no longer delays a later one (e.g. `03:00`) ([#127](https://github.com/DeRuina/timberjack/issues/127), [#128](https://github.com/DeRuina/timberjack/pull/128)) ([e1238b0](https://github.com/DeRuina/timberjack/commit/e1238b0f61229b979a79e928b920a54c274547ec))
+
 ## [1.4.9](https://github.com/DeRuina/timberjack/compare/v1.4.8...v1.4.9) (2026-10-17)
 
 ### Features
